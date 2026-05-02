@@ -1,0 +1,20 @@
+metric,value
+tenant,ZYNQ Sample Tenant Inc.
+branch,MAIN
+terminal,POS-01
+cash_session_id,1
+opened_at,2026-05-02 09:00:00
+closed_at,2026-05-02 21:00:00
+sale_count,12
+gross_sales,12500.00
+discounts,500.00
+net_sales,12000.00
+cash_payments,8000.00
+card_payments,2500.00
+e_wallet_payments,1500.00
+opening_cash,2000.00
+expected_cash,10000.00
+actual_cash,10000.00
+cash_difference,0.00
+z_valid,true
+note,"Sample only. CPA/BIR/RDO confirmation required."

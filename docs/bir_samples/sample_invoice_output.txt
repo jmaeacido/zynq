@@ -1,0 +1,34 @@
+ZYNQ SAMPLE TENANT INC.
+ZYNQ SAMPLE TRADE
+123 Sample Registered Address, Philippines
+TIN: 123-456-789-000 | RDO: 043
+
+Branch: MAIN | Terminal: POS-01
+MIN: MIN-SAMPLE-001
+PTU: PTU-SAMPLE-001
+Accreditation: ACCR-SAMPLE-001
+Software Version: ZYNQ-MVP
+
+SALES INVOICE
+Invoice No: SI-MAIN-POS01-000001
+Date/Time: 2026-05-02 10:30:00
+Cashier: Sample Cashier
+
+Item                         Qty      Unit       Total
+Sample VATable Item            2    100.00      200.00
+Sample VAT-Exempt Item         1     50.00       50.00
+
+Gross Sales                                      250.00
+Discounts                                          0.00
+VATable Sales                                    178.57
+VAT Amount                                        21.43
+VAT-Exempt Sales                                  50.00
+Zero-Rated Sales                                   0.00
+Non-VAT Sales                                      0.00
+Net Amount Due                                   250.00
+Amount Paid                                      300.00
+Change                                            50.00
+Payment Method: Cash
+
+This is a sample output for review.
+BIR-ready, not automatically BIR-approved.

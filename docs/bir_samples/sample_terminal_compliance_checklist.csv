@@ -1,0 +1,3 @@
+tenant,branch,terminal,terminal_code,min,ptu,serial_number,software_version,status
+ZYNQ Sample Tenant Inc.,MAIN,Main POS,POS-01,MIN-SAMPLE-001,PTU-SAMPLE-001,SN-SAMPLE-001,ZYNQ-MVP,Sale-ready configuration present
+ZYNQ Sample Tenant Inc.,MAIN,Backup POS,POS-02,,,SN-SAMPLE-002,ZYNQ-MVP,Blocked for sale: MIN and PTU missing

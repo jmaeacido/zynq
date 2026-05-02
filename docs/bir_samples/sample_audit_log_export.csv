@@ -1,0 +1,4 @@
+created_at,tenant_id,branch_id,user_id,action,module,record_type,record_id,ip_address
+2026-05-02 09:00:00,1,1,2,opened,Cash Sessions,App\Domains\Sales\Models\CashSession,1,127.0.0.1
+2026-05-02 10:30:00,1,1,2,created,Sales,App\Domains\Sales\Models\Sale,1,127.0.0.1
+2026-05-02 21:00:00,1,1,2,closed,Cash Sessions,App\Domains\Sales\Models\CashSession,1,127.0.0.1
