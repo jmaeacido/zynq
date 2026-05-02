@@ -2,9 +2,9 @@
 
 namespace Tests\Feature;
 
-use App\Domains\Audit\Models\AuditLog;
 use App\Domains\Branches\Models\Branch;
 use App\Domains\Inventory\Services\InventoryService;
+use App\Domains\Invoicing\Models\OfflineInvoiceRange;
 use App\Domains\Products\Models\Product;
 use App\Domains\Products\Models\ProductCategory;
 use App\Domains\Sales\Models\CashSession;
@@ -128,6 +128,181 @@ class OfflineSyncTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'offline_sale_sync_success', 'record_type' => 'sale', 'record_id' => (string) $sale->id]);
     }
 
+    public function test_conflict_list_visible_only_to_authorized_users(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 1, 'Opening stock', $cashier);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $this->payload($tenant, $branch, $terminal, $cashier, $session, $product, quantity: 2))->assertConflict();
+
+        $this->actingAs($cashier)->get(route('sync.conflicts'))->assertForbidden();
+        $this->actingAs($manager)->get(route('sync.conflicts'))->assertOk()->assertSee('Server stock is insufficient');
+    }
+
+    public function test_retry_conflict_does_not_duplicate_sale(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 1, 'Opening stock', $cashier);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product, quantity: 2);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertConflict();
+        app(InventoryService::class)->stockIn($product, $branch, 5, 'Manager adjustment', $manager);
+        $record = OfflineSaleSyncRecord::firstOrFail();
+
+        $this->actingAs($manager)->postJson(route('sync.conflicts.retry', $record))->assertOk()->assertJson(['status' => 'synced']);
+        $this->actingAs($manager)->postJson(route('sync.conflicts.retry', $record))->assertOk()->assertJson(['duplicate' => true, 'status' => 'synced']);
+
+        $this->assertDatabaseCount('sales', 1);
+    }
+
+    public function test_cancel_conflict_prevents_future_sync(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 1, 'Opening stock', $cashier);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product, quantity: 2);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertConflict();
+        $record = OfflineSaleSyncRecord::firstOrFail();
+
+        $this->actingAs($manager)->postJson(route('sync.conflicts.cancel', $record), ['reason' => 'Duplicate customer payment'])->assertOk()->assertJson(['status' => 'cancelled']);
+        app(InventoryService::class)->stockIn($product, $branch, 5, 'Manager adjustment', $manager);
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertOk()->assertJson(['status' => 'cancelled']);
+
+        $this->assertDatabaseCount('sales', 0);
+    }
+
+    public function test_reviewed_conflict_logs_audit_event(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 1, 'Opening stock', $cashier);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $this->payload($tenant, $branch, $terminal, $cashier, $session, $product, quantity: 2))->assertConflict();
+        $record = OfflineSaleSyncRecord::firstOrFail();
+
+        $this->actingAs($manager)->postJson(route('sync.conflicts.review', $record), ['reason' => 'Reviewed with cashier'])->assertOk()->assertJson(['status' => 'reviewed']);
+
+        $this->assertDatabaseHas('audit_logs', ['action' => 'offline_sale_reviewed', 'record_id' => (string) $record->id]);
+    }
+
+    public function test_unsafe_override_is_rejected(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product);
+        $payload['payload_hash'] = str_repeat('a', 64);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertConflict();
+        $record = OfflineSaleSyncRecord::firstOrFail();
+
+        $this->actingAs($manager)->postJson(route('sync.conflicts.override', $record), ['reason' => 'Force it'])->assertUnprocessable();
+        $this->assertDatabaseCount('sales', 0);
+    }
+
+    public function test_safe_override_requires_manager_admin_reason(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        $manager = $this->manager($tenant, $branch);
+        app(InventoryService::class)->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product);
+        $product->update(['selling_price' => 24]);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertConflict();
+        $record = OfflineSaleSyncRecord::firstOrFail();
+
+        $this->actingAs($cashier)->postJson(route('sync.conflicts.override', $record), ['reason' => 'Cashier try'])->assertForbidden();
+        $this->actingAs($manager)->postJson(route('sync.conflicts.override', $record))->assertUnprocessable();
+        $this->actingAs($manager)->postJson(route('sync.conflicts.override', $record), ['reason' => 'Manager approved current server price'])->assertOk()->assertJson(['status' => 'synced']);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'offline_sale_override_attempted', 'record_id' => (string) $record->id]);
+    }
+
+    public function test_offline_reference_links_to_synced_sale_and_invoice(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        app(InventoryService::class)->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)->assertOk();
+
+        $record = OfflineSaleSyncRecord::with('sale')->firstOrFail();
+        $this->assertSame($payload['offline_reference'], data_get($record->sale->metadata, 'offline_sync.offline_reference'));
+        $this->assertSame('SI-'.$terminal->terminal_code.'-00000001', $record->sale->invoice_number);
+    }
+
+    public function test_reserved_range_disabled_keeps_fallback_behavior(): void
+    {
+        config(['offline.invoice_range_enabled' => false]);
+        [$tenant, $branch, $terminal, $cashier] = $this->fixture();
+
+        $this->actingAs($cashier)->postJson(route('sync.invoice-ranges.reserve'), [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+        ])->assertUnprocessable();
+
+        $this->actingAs($cashier)->getJson(route('sync.invoice-ranges.status', [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+        ]))->assertOk()->assertJson(['enabled' => false, 'items' => []]);
+    }
+
+    public function test_reserved_range_reservation_rejects_overlaps(): void
+    {
+        config(['offline.invoice_range_enabled' => true]);
+        [$tenant, $branch, $terminal, $cashier] = $this->fixture();
+
+        $this->actingAs($cashier)->postJson(route('sync.invoice-ranges.reserve'), [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+        ])->assertOk();
+
+        $this->actingAs($cashier)->postJson(route('sync.invoice-ranges.reserve'), [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+        ])->assertUnprocessable();
+    }
+
+    public function test_out_of_range_offline_invoice_is_rejected(): void
+    {
+        config(['offline.invoice_range_enabled' => true]);
+        [$tenant, $branch, $terminal, $cashier, $product, $session] = $this->fixture();
+        app(InventoryService::class)->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+        OfflineInvoiceRange::create([
+            'tenant_id' => $tenant->id,
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+            'document_type' => 'sales_invoice',
+            'range_start' => 1,
+            'range_end' => 10,
+            'next_number' => 1,
+            'status' => 'active',
+            'reserved_by_user_id' => $cashier->id,
+            'reserved_at' => now(),
+            'expires_at' => now()->addHour(),
+        ]);
+        $payload = $this->payload($tenant, $branch, $terminal, $cashier, $session, $product);
+        $payload['sale']['offline_invoice_number'] = 99;
+        $payload['payload_hash'] = app(OfflineSaleSyncService::class)->payloadHash($payload['sale']);
+
+        $this->actingAs($cashier)->postJson(route('sync.offline-sales.store'), $payload)
+            ->assertConflict()
+            ->assertJsonPath('conflicts.0.code', 'offline_invoice_range_invalid');
+    }
+
+    public function test_pos_contains_stale_snapshot_and_unsupported_offline_controls(): void
+    {
+        [$tenant, $branch, $terminal, $cashier] = $this->fixture();
+
+        $this->actingAs($cashier)->get(route('pos.checkout'))
+            ->assertOk()
+            ->assertSee('stale-snapshot-warning')
+            ->assertSee('PENDING SYNC - NOT FINAL OFFICIAL INVOICE')
+            ->assertSee('Sync Now');
+    }
+
     private function payload(Tenant $tenant, Branch $branch, Terminal $terminal, User $cashier, CashSession $session, Product $product, float $quantity = 1): array
     {
         $sale = [
@@ -162,6 +337,7 @@ class OfflineSyncTest extends TestCase
             Permission::findOrCreate($permission);
         }
         Role::findOrCreate('Cashier')->givePermissionTo('create sales');
+        Role::findOrCreate('Branch Manager')->givePermissionTo('view reports');
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         $tenant = Tenant::create([
@@ -205,5 +381,14 @@ class OfflineSyncTest extends TestCase
         ]);
 
         return [$tenant, $branch, $terminal, $cashier, $product, $session];
+    }
+
+    private function manager(Tenant $tenant, Branch $branch): User
+    {
+        $manager = User::factory()->create(['tenant_id' => $tenant->id, 'branch_id' => $branch->id]);
+        $manager->assignRole('Branch Manager');
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+        return $manager;
     }
 }

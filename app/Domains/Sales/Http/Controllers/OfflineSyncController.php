@@ -3,6 +3,7 @@
 namespace App\Domains\Sales\Http\Controllers;
 
 use App\Domains\Branches\Models\Branch;
+use App\Domains\Invoicing\Services\OfflineInvoiceRangeService;
 use App\Domains\Sales\Models\OfflineSaleSyncRecord;
 use App\Domains\Sales\Services\OfflineSaleSyncService;
 use App\Domains\Tenancy\Services\TenantContext;
@@ -50,6 +51,7 @@ class OfflineSyncController extends Controller
             'payload_hash' => ['required', 'string', 'size:64'],
             'tax_snapshot.vat_rate' => ['nullable', 'numeric'],
             'sale' => ['required', 'array'],
+            'sale.offline_invoice_number' => ['nullable', 'integer', 'min:1'],
             'sale.items' => ['required', 'array', 'min:1'],
             'sale.items.*.product_id' => ['required', 'integer'],
             'sale.items.*.quantity' => ['required', 'numeric', 'gt:0'],
@@ -92,7 +94,7 @@ class OfflineSyncController extends Controller
             $lastSynced = $records->where('status', 'synced')->sortByDesc('synced_at')->first()?->synced_at;
 
             return response()->json([
-                'pending_count' => $records->whereIn('status', ['pending', 'failed'])->count(),
+                'pending_count' => $records->whereIn('status', ['pending_sync', 'syncing', 'failed'])->count(),
                 'conflict_count' => $records->where('status', 'conflict')->count(),
                 'last_synced_at' => $lastSynced?->toIso8601String(),
                 'items' => $records->take(50)->values(),
@@ -102,10 +104,95 @@ class OfflineSyncController extends Controller
         return view('sync.status', ['records' => $records]);
     }
 
-    public function conflicts(Request $request, TenantContext $context): View
+    public function conflicts(Request $request, TenantContext $context): JsonResponse|View
     {
-        return view('sync.conflicts', [
-            'records' => $this->records($request, $context)->where('status', 'conflict')->values(),
+        $records = $this->records($request, $context)->where('status', 'conflict')->values();
+
+        if ($request->expectsJson()) {
+            return response()->json(['items' => $records]);
+        }
+
+        return view('sync.conflicts', ['records' => $records]);
+    }
+
+    public function conflict(Request $request, OfflineSaleSyncRecord $record): JsonResponse|View
+    {
+        $this->assertRecordAccess($request, $record);
+        $record->load(['sale', 'branch', 'terminal', 'cashier', 'cashSession']);
+
+        if ($request->expectsJson()) {
+            return response()->json($record);
+        }
+
+        return view('sync.conflict-show', ['record' => $record]);
+    }
+
+    public function retry(Request $request, OfflineSaleSyncRecord $record, OfflineSaleSyncService $service)
+    {
+        return $this->resolutionResponse($request, fn () => $service->retry($record, $request->user()));
+    }
+
+    public function cancel(Request $request, OfflineSaleSyncRecord $record, OfflineSaleSyncService $service)
+    {
+        $data = $request->validate(['reason' => ['nullable', 'string', 'max:1000']]);
+
+        return $this->resolutionResponse($request, fn () => $service->cancel($record, $request->user(), $data['reason'] ?? null));
+    }
+
+    public function review(Request $request, OfflineSaleSyncRecord $record, OfflineSaleSyncService $service)
+    {
+        $data = $request->validate(['reason' => ['nullable', 'string', 'max:1000']]);
+
+        return $this->resolutionResponse($request, fn () => $service->review($record, $request->user(), $data['reason'] ?? null));
+    }
+
+    public function override(Request $request, OfflineSaleSyncRecord $record, OfflineSaleSyncService $service)
+    {
+        $data = $request->validate(['reason' => ['required', 'string', 'max:1000']]);
+
+        return $this->resolutionResponse($request, fn () => $service->override($record, $request->user(), $data['reason']));
+    }
+
+    public function reserveInvoiceRange(Request $request, OfflineInvoiceRangeService $service): JsonResponse
+    {
+        $data = $request->validate([
+            'branch_id' => ['required', 'exists:branches,id'],
+            'terminal_id' => ['required', 'exists:terminals,id'],
+            'document_type' => ['nullable', 'string', 'max:32'],
+        ]);
+
+        try {
+            $range = $service->reserve(
+                $request->user(),
+                Branch::findOrFail((int) $data['branch_id']),
+                Terminal::findOrFail((int) $data['terminal_id']),
+                $data['document_type'] ?? 'sales_invoice',
+            );
+        } catch (InvalidArgumentException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        return response()->json($range);
+    }
+
+    public function invoiceRangeStatus(Request $request, OfflineInvoiceRangeService $service): JsonResponse
+    {
+        $data = $request->validate([
+            'branch_id' => ['required', 'exists:branches,id'],
+            'terminal_id' => ['required', 'exists:terminals,id'],
+            'document_type' => ['nullable', 'string', 'max:32'],
+        ]);
+
+        $branch = Branch::findOrFail((int) $data['branch_id']);
+        $terminal = Terminal::findOrFail((int) $data['terminal_id']);
+
+        if (! $request->user()->hasRole('Super Admin') && ((int) $request->user()->tenant_id !== (int) $branch->tenant_id || ($request->user()->branch_id && (int) $request->user()->branch_id !== (int) $branch->id))) {
+            return response()->json(['message' => 'User cannot inspect ranges for another tenant or branch.'], 422);
+        }
+
+        return response()->json([
+            'enabled' => $service->enabled(),
+            'items' => $service->enabled() ? $service->activeFor($branch, $terminal, $data['document_type'] ?? 'sales_invoice') : [],
         ]);
     }
 
@@ -115,5 +202,31 @@ class OfflineSyncController extends Controller
             ->latest()
             ->limit(100)
             ->get();
+    }
+
+    private function assertRecordAccess(Request $request, OfflineSaleSyncRecord $record): void
+    {
+        $user = $request->user();
+        abort_unless($user->hasRole('Super Admin') || (int) $user->tenant_id === (int) $record->tenant_id, 403);
+        abort_if(! $user->hasRole('Super Admin') && $user->branch_id && (int) $user->branch_id !== (int) $record->branch_id, 403);
+    }
+
+    private function resolutionResponse(Request $request, callable $callback)
+    {
+        try {
+            $result = $callback();
+        } catch (InvalidArgumentException $exception) {
+            if (! $request->expectsJson()) {
+                return back()->withErrors(['offline_sync' => $exception->getMessage()]);
+            }
+
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        if (! $request->expectsJson()) {
+            return back()->with('status', $result['message']);
+        }
+
+        return response()->json($result, $result['status'] === 'conflict' ? 409 : 200);
     }
 }

@@ -5,6 +5,7 @@ namespace App\Domains\Sales\Services;
 use App\Domains\Audit\Services\AuditService;
 use App\Domains\Branches\Models\Branch;
 use App\Domains\Inventory\Models\InventoryStock;
+use App\Domains\Invoicing\Services\OfflineInvoiceRangeService;
 use App\Domains\Products\Models\Product;
 use App\Domains\Sales\Models\CashSession;
 use App\Domains\Sales\Models\OfflineSaleSyncRecord;
@@ -24,6 +25,7 @@ class OfflineSaleSyncService
         private readonly TerminalComplianceService $terminalCompliance,
         private readonly TaxEngine $taxEngine,
         private readonly AuditService $audit,
+        private readonly OfflineInvoiceRangeService $offlineInvoiceRanges,
     ) {
     }
 
@@ -65,6 +67,7 @@ class OfflineSaleSyncService
             ->all();
 
         $vatSetting = TenantSetting::where('tenant_id', $branch->tenant_id)->where('key', 'vat_rate')->first();
+        $rangeEnabled = $this->offlineInvoiceRanges->enabled();
 
         $payload = [
             'downloaded_at' => now()->toIso8601String(),
@@ -114,8 +117,12 @@ class OfflineSaleSyncService
                 'updated_at' => $vatSetting?->updated_at?->toIso8601String(),
             ],
             'invoice_strategy' => [
-                'mode' => 'temporary_reference_until_sync',
-                'message' => 'Offline receipts are pending sync and receive official invoice numbers only after server sync.',
+                'mode' => $rangeEnabled ? 'reserved_range' : 'temporary_reference_until_sync',
+                'range_enabled' => $rangeEnabled,
+                'stale_snapshot_minutes' => (int) config('offline.stale_snapshot_minutes', 240),
+                'message' => $rangeEnabled
+                    ? 'Reserved offline ranges are enabled. Official invoice acceptance still occurs only after server sync.'
+                    : 'Offline receipts are pending sync and receive official invoice numbers only after server sync.',
             ],
         ];
 
@@ -139,16 +146,7 @@ class OfflineSaleSyncService
                 ->first();
 
             if ($existing) {
-                if (! $cashier->hasRole('Super Admin') && ((int) $cashier->tenant_id !== (int) $existing->tenant_id || ($cashier->branch_id && (int) $cashier->branch_id !== (int) $existing->branch_id))) {
-                    throw new InvalidArgumentException('User cannot sync offline sales for another tenant.');
-                }
-
-                $this->audit->record($cashier, 'offline_sale_sync_retry', 'offline_sync', 'offline_sale_sync_record', $existing->id, [
-                    'status' => $existing->status,
-                    'sale_id' => $existing->sale_id,
-                ], tenantId: $existing->tenant_id, branchId: $existing->branch_id);
-
-                return $this->responseFor($existing, duplicate: true);
+                return $this->retryExisting($existing, $cashier, duplicate: true);
             }
 
             $branch = Branch::with('tenant')->findOrFail((int) $payload['branch_id']);
@@ -164,65 +162,203 @@ class OfflineSaleSyncService
                 'idempotency_key' => $idempotencyKey,
                 'offline_reference' => (string) $payload['offline_reference'],
                 'payload_hash' => (string) $payload['payload_hash'],
-                'status' => 'pending',
+                'status' => 'pending_sync',
                 'created_offline_at' => $payload['created_offline_at'],
                 'payload' => $payload,
             ]);
 
-            $conflicts = $this->conflicts($payload, $cashier, $branch, $terminal);
-            if ($conflicts !== []) {
-                $record->update(['status' => 'conflict', 'conflicts' => $conflicts]);
-                $this->audit->record($cashier, 'offline_sale_conflict', 'offline_sync', 'offline_sale_sync_record', $record->id, [
-                    'offline_reference' => $record->offline_reference,
-                    'conflicts' => $conflicts,
-                ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+            return $this->finalizeRecord($record, $cashier);
+        });
+    }
 
-                return $this->responseFor($record->refresh());
+    public function retry(OfflineSaleSyncRecord $record, User $actor): array
+    {
+        return DB::transaction(function () use ($record, $actor): array {
+            $record = OfflineSaleSyncRecord::lockForUpdate()->findOrFail($record->id);
+
+            return $this->retryExisting($record, $actor);
+        });
+    }
+
+    public function cancel(OfflineSaleSyncRecord $record, User $actor, ?string $reason = null): array
+    {
+        return DB::transaction(function () use ($record, $actor, $reason): array {
+            $record = OfflineSaleSyncRecord::lockForUpdate()->findOrFail($record->id);
+            $this->assertRecordAccess($actor, $record);
+
+            if ($record->status === 'synced') {
+                throw new InvalidArgumentException('Synced offline sales cannot be cancelled from the sync queue.');
             }
 
-            try {
-                $sale = $this->sales->create([
-                    'branch_id' => $branch->id,
-                    'terminal_id' => $terminal->id,
-                    'items' => Arr::get($payload, 'sale.items', []),
-                    'payments' => Arr::get($payload, 'sale.payments', []),
-                    'discounts' => Arr::get($payload, 'sale.discounts', []),
-                ], $cashier);
-            } catch (InvalidArgumentException $exception) {
-                $record->update(['status' => 'conflict', 'conflicts' => [['code' => 'sale_service_rejected', 'message' => $exception->getMessage()]]]);
-                $this->audit->record($cashier, 'offline_sale_conflict', 'offline_sync', 'offline_sale_sync_record', $record->id, [
-                    'offline_reference' => $record->offline_reference,
-                    'message' => $exception->getMessage(),
-                ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+            $record->update([
+                'status' => 'cancelled',
+                'cancelled_at' => now(),
+                'cancelled_by_user_id' => $actor->id,
+                'resolution_reason' => $reason,
+            ]);
 
-                return $this->responseFor($record->refresh());
-            } catch (\Throwable $exception) {
-                $record->update(['status' => 'failed', 'last_error' => $exception->getMessage()]);
-                $this->audit->record($cashier, 'offline_sale_sync_failure', 'offline_sync', 'offline_sale_sync_record', $record->id, [
-                    'offline_reference' => $record->offline_reference,
-                    'message' => $exception->getMessage(),
-                ], tenantId: $record->tenant_id, branchId: $record->branch_id);
-
-                throw $exception;
-            }
-
-            $metadata = $sale->metadata ?? [];
-            $metadata['offline_sync'] = [
-                'idempotency_key' => $idempotencyKey,
+            $this->audit->record($actor, 'offline_sale_cancelled', 'offline_sync', 'offline_sale_sync_record', $record->id, [
                 'offline_reference' => $record->offline_reference,
-                'created_offline_at' => $record->created_offline_at?->toIso8601String(),
-                'payload_hash' => $record->payload_hash,
-            ];
-            $sale->update(['metadata' => $metadata]);
-
-            $record->update(['status' => 'synced', 'sale_id' => $sale->id, 'synced_at' => now()]);
-            $this->audit->record($cashier, 'offline_sale_sync_success', 'offline_sync', 'sale', $sale->id, [
-                'offline_reference' => $record->offline_reference,
-                'invoice_number' => $sale->invoice_number,
+                'reason' => $reason,
             ], tenantId: $record->tenant_id, branchId: $record->branch_id);
 
             return $this->responseFor($record->refresh());
         });
+    }
+
+    public function review(OfflineSaleSyncRecord $record, User $actor, ?string $reason = null): array
+    {
+        return DB::transaction(function () use ($record, $actor, $reason): array {
+            $record = OfflineSaleSyncRecord::lockForUpdate()->findOrFail($record->id);
+            $this->assertRecordAccess($actor, $record);
+
+            if (! in_array($record->status, ['conflict', 'failed', 'cancelled'], true)) {
+                throw new InvalidArgumentException('Only unresolved offline sync records can be marked reviewed.');
+            }
+
+            $record->update([
+                'status' => 'reviewed',
+                'reviewed_at' => now(),
+                'reviewed_by_user_id' => $actor->id,
+                'resolution_reason' => $reason,
+            ]);
+
+            $this->audit->record($actor, 'offline_sale_reviewed', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'reason' => $reason,
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            return $this->responseFor($record->refresh());
+        });
+    }
+
+    public function override(OfflineSaleSyncRecord $record, User $actor, string $reason): array
+    {
+        if (! $this->canManageConflicts($actor)) {
+            throw new InvalidArgumentException('Manager/admin approval is required.');
+        }
+
+        if (blank($reason)) {
+            throw new InvalidArgumentException('A manager override reason is required.');
+        }
+
+        return DB::transaction(function () use ($record, $actor, $reason): array {
+            $record = OfflineSaleSyncRecord::lockForUpdate()->findOrFail($record->id);
+            $this->assertRecordAccess($actor, $record);
+            $unsafe = array_intersect($this->conflictCodes($record), $this->unsafeOverrideCodes());
+
+            if ($unsafe !== []) {
+                throw new InvalidArgumentException('This conflict type cannot be overridden: '.implode(', ', $unsafe));
+            }
+
+            $this->audit->record($actor, 'offline_sale_override_attempted', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'reason' => $reason,
+                'conflicts' => $record->conflicts ?? [],
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            $record->forceFill([
+                'resolution_reason' => $reason,
+                'resolution_metadata' => ['override_by_user_id' => $actor->id, 'override_at' => now()->toIso8601String()],
+            ])->save();
+
+            return $this->finalizeRecord($record, $record->cashier ?: $actor, override: true);
+        });
+    }
+
+    private function retryExisting(OfflineSaleSyncRecord $record, User $actor, bool $duplicate = false): array
+    {
+        $this->assertRecordAccess($actor, $record);
+
+        $this->audit->record($actor, 'offline_sale_sync_retry', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+            'status' => $record->status,
+            'sale_id' => $record->sale_id,
+        ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+        if ($record->status === 'cancelled') {
+            return $this->responseFor($record->refresh(), duplicate: $duplicate);
+        }
+
+        if ($record->status === 'synced') {
+            return $this->responseFor($record->refresh(), duplicate: true);
+        }
+
+        return $this->finalizeRecord($record, $record->cashier ?: $actor, duplicate: $duplicate);
+    }
+
+    private function finalizeRecord(OfflineSaleSyncRecord $record, User $cashier, bool $duplicate = false, bool $override = false): array
+    {
+        $payload = $record->payload ?? [];
+        $branch = Branch::with('tenant')->findOrFail((int) $record->branch_id);
+        $terminal = Terminal::lockForUpdate()->findOrFail((int) $record->terminal_id);
+        $record->update(['status' => 'syncing']);
+
+        try {
+            $this->offlineInvoiceRanges->validateSubmittedNumber($payload);
+        } catch (InvalidArgumentException $exception) {
+            $record->update(['status' => 'conflict', 'conflicts' => [['code' => 'offline_invoice_range_invalid', 'message' => $exception->getMessage()]]]);
+            $this->audit->record($cashier, 'offline_sale_conflict', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'message' => $exception->getMessage(),
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            return $this->responseFor($record->refresh(), duplicate: $duplicate);
+        }
+
+        $conflicts = $this->conflicts($payload, $cashier, $branch, $terminal);
+        if ($conflicts !== [] && ! $override) {
+            $record->update(['status' => 'conflict', 'conflicts' => $conflicts]);
+            $this->audit->record($cashier, 'offline_sale_conflict', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'conflicts' => $conflicts,
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            return $this->responseFor($record->refresh(), duplicate: $duplicate);
+        }
+
+        try {
+            $sale = $this->sales->create([
+                'branch_id' => $branch->id,
+                'terminal_id' => $terminal->id,
+                'items' => Arr::get($payload, 'sale.items', []),
+                'payments' => Arr::get($payload, 'sale.payments', []),
+                'discounts' => Arr::get($payload, 'sale.discounts', []),
+            ], $cashier);
+        } catch (InvalidArgumentException $exception) {
+            $record->update(['status' => 'conflict', 'conflicts' => [['code' => 'sale_service_rejected', 'message' => $exception->getMessage()]]]);
+            $this->audit->record($cashier, 'offline_sale_conflict', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'message' => $exception->getMessage(),
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            return $this->responseFor($record->refresh(), duplicate: $duplicate);
+        } catch (\Throwable $exception) {
+            $record->update(['status' => 'failed', 'last_error' => $exception->getMessage()]);
+            $this->audit->record($cashier, 'offline_sale_sync_failure', 'offline_sync', 'offline_sale_sync_record', $record->id, [
+                'offline_reference' => $record->offline_reference,
+                'message' => $exception->getMessage(),
+            ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+            throw $exception;
+        }
+
+        $metadata = $sale->metadata ?? [];
+        $metadata['offline_sync'] = [
+            'idempotency_key' => $record->idempotency_key,
+            'offline_reference' => $record->offline_reference,
+            'created_offline_at' => $record->created_offline_at?->toIso8601String(),
+            'payload_hash' => $record->payload_hash,
+        ];
+        $sale->update(['metadata' => $metadata]);
+
+        $record->update(['status' => 'synced', 'sale_id' => $sale->id, 'synced_at' => now(), 'conflicts' => null]);
+        $this->audit->record($cashier, 'offline_sale_sync_success', 'offline_sync', 'sale', $sale->id, [
+            'offline_reference' => $record->offline_reference,
+            'invoice_number' => $sale->invoice_number,
+            'override' => $override,
+        ], tenantId: $record->tenant_id, branchId: $record->branch_id);
+
+        return $this->responseFor($record->refresh(), duplicate: $duplicate);
     }
 
     private function conflicts(array $payload, User $cashier, Branch $branch, Terminal $terminal): array
@@ -231,6 +367,10 @@ class OfflineSaleSyncService
 
         if ((int) $payload['tenant_id'] !== (int) $branch->tenant_id) {
             $conflicts[] = ['code' => 'tenant_mismatch', 'message' => 'Offline sale tenant does not match the selected branch.'];
+        }
+
+        if ((int) ($payload['terminal_id'] ?? 0) !== (int) $terminal->id) {
+            $conflicts[] = ['code' => 'terminal_mismatch', 'message' => 'Offline sale terminal does not match the selected terminal.'];
         }
 
         if ((int) $payload['cashier_id'] !== (int) $cashier->id) {
@@ -297,10 +437,13 @@ class OfflineSaleSyncService
             'idempotency_key' => $record->idempotency_key,
             'sale_id' => $record->sale_id,
             'invoice_number' => $record->sale?->invoice_number,
+            'invoice_reprint_url' => $record->sale_id ? route('sales.invoice.thermal', $record->sale_id) : null,
             'conflicts' => $record->conflicts ?? [],
             'message' => match ($record->status) {
                 'synced' => 'Offline sale synced successfully.',
                 'conflict' => 'Offline sale needs manager/admin review before it can be finalized.',
+                'cancelled' => 'Offline sale was cancelled and cannot be synced.',
+                'reviewed' => 'Offline sale conflict was reviewed.',
                 'failed' => 'Offline sale sync failed and can be retried.',
                 default => 'Offline sale is pending sync.',
             },
@@ -320,6 +463,39 @@ class OfflineSaleSyncService
         if (! $cashier->hasRole('Super Admin') && $cashier->branch_id && (int) $cashier->branch_id !== (int) $branch->id) {
             throw new InvalidArgumentException('User cannot sync offline sales for another branch.');
         }
+    }
+
+    private function assertRecordAccess(User $user, OfflineSaleSyncRecord $record): void
+    {
+        if (! $user->hasRole('Super Admin') && (int) $user->tenant_id !== (int) $record->tenant_id) {
+            throw new InvalidArgumentException('User cannot access offline sync records for another tenant.');
+        }
+
+        if (! $user->hasRole('Super Admin') && $user->branch_id && (int) $user->branch_id !== (int) $record->branch_id) {
+            throw new InvalidArgumentException('User cannot access offline sync records for another branch.');
+        }
+    }
+
+    public function canManageConflicts(User $user): bool
+    {
+        return $user->hasRole('Super Admin') || $user->hasRole('Tenant Admin') || $user->hasRole('Branch Manager') || $user->can('view reports');
+    }
+
+    private function conflictCodes(OfflineSaleSyncRecord $record): array
+    {
+        return collect($record->conflicts ?? [])->pluck('code')->filter()->values()->all();
+    }
+
+    private function unsafeOverrideCodes(): array
+    {
+        return [
+            'tenant_mismatch',
+            'terminal_mismatch',
+            'duplicate_idempotency_abuse',
+            'payload_hash_mismatch',
+            'terminal_not_compliant',
+            'offline_invoice_range_invalid',
+        ];
     }
 
     public function payloadHash(array $salePayload): string

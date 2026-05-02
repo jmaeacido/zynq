@@ -58,7 +58,14 @@ Route::middleware(['auth', 'tenant.active'])->group(function (): void {
     Route::get('sync/offline-snapshot', [OfflineSyncController::class, 'snapshot'])->middleware('permission:create sales')->name('sync.snapshot');
     Route::post('sync/offline-sales', [OfflineSyncController::class, 'store'])->middleware('permission:create sales')->name('sync.offline-sales.store');
     Route::get('sync/status', [OfflineSyncController::class, 'status'])->middleware('permission:create sales')->name('sync.status');
-    Route::get('sync/conflicts', [OfflineSyncController::class, 'conflicts'])->middleware('permission:create sales')->name('sync.conflicts');
+    Route::get('sync/conflicts', [OfflineSyncController::class, 'conflicts'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts');
+    Route::get('sync/conflicts/{record}', [OfflineSyncController::class, 'conflict'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts.show');
+    Route::post('sync/conflicts/{record}/retry', [OfflineSyncController::class, 'retry'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts.retry');
+    Route::post('sync/conflicts/{record}/cancel', [OfflineSyncController::class, 'cancel'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts.cancel');
+    Route::post('sync/conflicts/{record}/review', [OfflineSyncController::class, 'review'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts.review');
+    Route::post('sync/conflicts/{record}/override', [OfflineSyncController::class, 'override'])->middleware('role_or_permission:Super Admin|view reports')->name('sync.conflicts.override');
+    Route::post('sync/invoice-ranges/reserve', [OfflineSyncController::class, 'reserveInvoiceRange'])->middleware('permission:create sales')->name('sync.invoice-ranges.reserve');
+    Route::get('sync/invoice-ranges/status', [OfflineSyncController::class, 'invoiceRangeStatus'])->middleware('permission:create sales')->name('sync.invoice-ranges.status');
     Route::resource('cash-sessions', CashSessionController::class)->only(['index', 'create', 'store', 'show'])->middleware('permission:create sales');
     Route::post('cash-sessions/{cash_session}/close', [CashSessionController::class, 'close'])->middleware('permission:create sales')->name('cash-sessions.close');
     Route::resource('sales', SaleController::class)->only(['index', 'show'])->middleware('role_or_permission:Super Admin|view reports|create sales');

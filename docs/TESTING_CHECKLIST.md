@@ -58,4 +58,12 @@ Confirm no hard-coded client-specific BIR data exists. Confirm the visible wordi
 - Submit the same idempotency key again and confirm no duplicate sale is created.
 - Close the cached cash session before sync and confirm conflict handling.
 - Make a product inactive or reduce stock before sync and confirm conflict handling.
+- Confirm cashiers cannot open conflict pages and manager/admin users can open **Offline Sync / Conflicts**.
+- Retry a resolved conflict and confirm no duplicate sale is created.
+- Cancel a conflict and confirm the same offline payload cannot later create a sale.
+- Mark a conflict reviewed and confirm an audit trail entry exists.
+- Confirm unsafe override types are rejected and safe overrides require a manager/admin reason.
+- Confirm reserved invoice range mode is disabled by default.
+- Enable reserved ranges in a test environment and confirm overlap and out-of-range submissions are rejected.
+- Confirm POS shows offline state, pending count, last snapshot time, last sync attempt, and stale snapshot warning.
 - Run `php artisan test` before release.

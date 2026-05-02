@@ -51,6 +51,6 @@ When the POS is online, use **Cache Offline Snapshot** before operating in locat
 
 If the browser goes offline, ZYNQ shows an offline warning. Cashiers may complete sales only from cached products and only when a cached open cash session exists. Offline receipts use temporary references and are pending sync, not final official invoices.
 
-When connectivity returns, use **Sync Now** from POS Checkout. Synced sales receive official invoice numbers. Items that show as conflicts require manager/admin review.
+When connectivity returns, use **Sync Now** from POS Checkout. Synced sales receive official invoice numbers and the POS replaces the temporary reference with final invoice details and a reprint link. Items that show as conflicts require manager/admin review.
 
-Unsupported offline actions include voids/refunds, report exports, tenant/settings changes, and product or inventory management.
+Unsupported offline actions include voids/refunds, report exports, tenant/settings changes, and product or inventory management. POS shows online/offline state, pending count, last cached snapshot, last sync attempt, and stale snapshot warnings.

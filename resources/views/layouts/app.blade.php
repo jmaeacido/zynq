@@ -50,33 +50,36 @@
                     @endcan
                     @can('manage inventory')
                         <li class="nav-item"><a href="{{ route('categories.index') }}" class="nav-link">Product Categories</a></li>
-                        <li class="nav-item"><a href="{{ route('products.index') }}" class="nav-link">Products</a></li>
-                        <li class="nav-item"><a href="{{ route('inventory.index') }}" class="nav-link">Inventory</a></li>
-                        <li class="nav-item"><a href="{{ route('stock-movements.index') }}" class="nav-link">Stock Movements</a></li>
+                        <li class="nav-item"><a href="{{ route('products.index') }}" class="nav-link" data-offline-unsupported>Products</a></li>
+                        <li class="nav-item"><a href="{{ route('inventory.index') }}" class="nav-link" data-offline-unsupported>Inventory</a></li>
+                        <li class="nav-item"><a href="{{ route('stock-movements.index') }}" class="nav-link" data-offline-unsupported>Stock Movements</a></li>
                     @endcan
                     @can('create sales')
                         <li class="nav-item"><a href="{{ route('cash-sessions.index') }}" class="nav-link">Cash Sessions</a></li>
                         <li class="nav-item"><a href="{{ route('pos.checkout') }}" class="nav-link">POS Checkout</a></li>
                         <li class="nav-item"><a href="{{ route('sync.status') }}" class="nav-link">Offline Sync</a></li>
                     @endcan
+                    @can('view reports')
+                        <li class="nav-item"><a href="{{ route('sync.conflicts') }}" class="nav-link">Offline Sync / Conflicts</a></li>
+                    @endcan
                     @if (auth()->user()?->can('create sales') || auth()->user()?->can('view reports') || auth()->user()?->hasRole('Super Admin'))
                         <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link">Sales</a></li>
                     @endif
                     @can('view reports')
-                        <li class="nav-item"><a href="{{ route('reports.vat-sales') }}" class="nav-link">VAT Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.non-vat-sales') }}" class="nav-link">Non-VAT Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.discounts') }}" class="nav-link">Discount Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.daily-sales') }}" class="nav-link">Daily Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.voids') }}" class="nav-link">Void Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.refunds') }}" class="nav-link">Refund Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.audit-trail') }}" class="nav-link">Audit Trail</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.vat-sales') }}" class="nav-link" data-offline-unsupported>VAT Sales Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.non-vat-sales') }}" class="nav-link" data-offline-unsupported>Non-VAT Sales Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.discounts') }}" class="nav-link" data-offline-unsupported>Discount Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.daily-sales') }}" class="nav-link" data-offline-unsupported>Daily Sales Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.voids') }}" class="nav-link" data-offline-unsupported>Void Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.refunds') }}" class="nav-link" data-offline-unsupported>Refund Report</a></li>
+                        <li class="nav-item"><a href="{{ route('reports.audit-trail') }}" class="nav-link" data-offline-unsupported>Audit Trail</a></li>
                     @endcan
                     @can('manage settings')
                         <li class="nav-item"><a href="{{ route('onboarding.index') }}" class="nav-link">Onboarding Wizard</a></li>
                         <li class="nav-item"><a href="{{ route('settings.bir.edit') }}" class="nav-link">BIR Info Setup</a></li>
                         <li class="nav-item"><a href="{{ route('settings.invoice.edit') }}" class="nav-link">Invoice Settings</a></li>
                         <li class="nav-item"><a href="{{ route('invoice-preview.show') }}" class="nav-link">Invoice Preview</a></li>
-                        <li class="nav-item"><a href="{{ route('settings.edit') }}" class="nav-link">Settings</a></li>
+                        <li class="nav-item"><a href="{{ route('settings.edit') }}" class="nav-link" data-offline-unsupported>Settings</a></li>
                     @endcan
                     @can('view compliance')
                         <li class="nav-item"><a href="{{ route('compliance.checklist') }}" class="nav-link">Compliance</a></li>

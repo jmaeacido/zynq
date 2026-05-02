@@ -43,14 +43,13 @@ ZYNQ is SaaS-ready and multi-branch ready. A browser-based offline sync foundati
 - IndexedDB snapshot and pending sale queue.
 - Snapshot endpoint for tenant, branch, terminal, products, tax settings, cash session, and cashier info.
 - Authenticated sync endpoint with idempotency.
-- Conflict detection and conflict list.
+- Conflict detection, conflict list, conflict detail view, and manager/admin resolution actions.
 - Audit logs for offline snapshot and sync outcomes.
+- Optional reserved invoice range endpoints, disabled by default.
 
 ## Not Yet Implemented
 
 - API token provisioning for dedicated terminal apps.
-- Admin conflict resolution actions.
-- Invoice range reservation.
-- Full offline print template with final/synced reprint lifecycle.
+- Full browser automation around offline receipt printing and final/synced reprint lifecycle.
 
 CPA, BIR, and RDO confirmation is required before enabling offline sales in production.

@@ -23,12 +23,18 @@
             <tbody>
                 @forelse ($records as $record)
                     <tr>
-                        <td>{{ $record->offline_reference }}</td>
-                        <td><span class="badge bg-{{ $record->status === 'synced' ? 'success' : ($record->status === 'conflict' ? 'danger' : 'secondary') }}">{{ $record->status }}</span></td>
+                        <td><a href="{{ route('sync.conflicts.show', $record) }}">{{ $record->offline_reference }}</a></td>
+                        <td><span class="badge bg-{{ $record->status === 'synced' ? 'success' : ($record->status === 'conflict' ? 'danger' : ($record->status === 'cancelled' ? 'dark' : 'secondary')) }}">{{ $record->statusLabel() }}</span></td>
                         <td>{{ $record->branch?->branch_name }}</td>
                         <td>{{ $record->terminal?->terminal_name }}</td>
                         <td>{{ $record->cashier?->name }}</td>
-                        <td>{{ $record->sale?->invoice_number ?? 'Pending' }}</td>
+                        <td>
+                            @if ($record->sale)
+                                <a href="{{ route('sales.invoice.thermal', $record->sale) }}">{{ $record->sale->invoice_number }}</a>
+                            @else
+                                Pending
+                            @endif
+                        </td>
                         <td>{{ $record->created_offline_at?->format('Y-m-d H:i') }}</td>
                         <td>{{ $record->synced_at?->format('Y-m-d H:i') ?? '-' }}</td>
                     </tr>

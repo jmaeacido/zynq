@@ -11,8 +11,13 @@
             <button type="button" class="btn btn-outline-primary btn-sm" id="cache-snapshot">Cache Offline Snapshot</button>
             <button type="button" class="btn btn-outline-success btn-sm" id="sync-now">Sync Now</button>
             <a class="btn btn-outline-secondary btn-sm" href="{{ route('sync.status') }}">Sync Status</a>
-            <a class="btn btn-outline-danger btn-sm" href="{{ route('sync.conflicts') }}">Conflicts</a>
-            <span class="text-muted" id="last-synced-at">Last synced at: never</span>
+            @can('view reports')
+                <a class="btn btn-outline-danger btn-sm" href="{{ route('sync.conflicts') }}">Conflicts</a>
+            @endcan
+            <span class="text-muted" id="last-snapshot-at">Last snapshot cached at: never</span>
+            <span class="text-muted" id="last-synced-at">Last sync attempted at: never</span>
+            <span class="badge bg-secondary" id="pos-pending-count">0 pending</span>
+            <span class="badge bg-warning text-dark d-none" id="stale-snapshot-warning">Stale snapshot</span>
         </div>
     </div>
     <div class="row">
@@ -165,10 +170,11 @@ function addProduct(product) {
     else cart.push({...product, quantity: 1});
     renderCart();
 }
-document.getElementById('add-selected').addEventListener('click', () => {
+document.getElementById('add-selected').addEventListener('click', async () => {
     const query = document.getElementById('product-search').value.toLowerCase();
-    const product = products.find(p => [p.barcode, p.sku, p.name].filter(Boolean).some(value => String(value).toLowerCase() === query || String(value).toLowerCase().includes(query)));
-    if (product) addProduct(product);
+    const source = await offlineProducts();
+    const product = source.find(p => [p.barcode, p.sku, p.name].filter(Boolean).some(value => String(value).toLowerCase() === query || String(value).toLowerCase().includes(query)));
+    if (product) addProduct({id: product.id, name: product.name, barcode: product.barcode, sku: product.sku, price: Number(product.price || product.selling_price), tax_type: product.tax_type});
 });
 document.addEventListener('input', event => {
     if (event.target.classList.contains('cart-qty')) cart[event.target.dataset.index].quantity = Number(event.target.value || 0);
@@ -189,6 +195,7 @@ const snapshotKey = 'current-pos-snapshot';
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const snapshotUrl = @json(route('sync.snapshot'));
 const syncUrl = @json(route('sync.offline-sales.store'));
+const staleSnapshotMinutes = @json((int) config('offline.stale_snapshot_minutes', 240));
 const getField = name => document.querySelector(`[name="${name}"]`);
 const stable = value => {
     if (Array.isArray(value)) return value.map(stable);
@@ -227,6 +234,11 @@ const putOfflineSale = sale => withStore('offline_sales', 'readwrite', store => 
 const deleteOfflineSale = id => withStore('offline_sales', 'readwrite', store => store.delete(id));
 const putSnapshot = snapshot => withStore('snapshots', 'readwrite', store => store.put({key: snapshotKey, ...snapshot}));
 const getSnapshot = () => requestFromStore('snapshots', 'readonly', store => store.get(snapshotKey));
+const offlineProducts = async () => {
+    if (navigator.onLine) return products;
+    const snapshot = await getSnapshot();
+    return snapshot?.products || [];
+};
 const cleanPayments = () => [0, 1, 2].map(index => ({
     payment_method: getField(`payments[${index}][payment_method]`)?.value,
     amount: Number(getField(`payments[${index}][amount]`)?.value || 0),
@@ -258,6 +270,18 @@ const buildSalePayload = snapshot => ({
 });
 const updateOfflineUi = () => {
     document.getElementById('offline-warning').classList.toggle('d-none', navigator.onLine);
+    document.getElementById('sync-now').disabled = !navigator.onLine;
+    window.ZynqOfflineShell.allSales().then(sales => {
+        const count = sales.filter(item => ['pending_sync', 'sync_failed', 'conflict'].includes(item.sync_status)).length;
+        document.getElementById('pos-pending-count').textContent = count + ' pending';
+    });
+    getSnapshot().then(snapshot => {
+        if (!snapshot?.downloaded_at) return;
+        const downloaded = new Date(snapshot.downloaded_at);
+        document.getElementById('last-snapshot-at').textContent = 'Last snapshot cached at: ' + downloaded.toLocaleString();
+        const stale = (Date.now() - downloaded.getTime()) > staleSnapshotMinutes * 60 * 1000;
+        document.getElementById('stale-snapshot-warning').classList.toggle('d-none', !stale);
+    });
     window.ZynqOfflineShell.refresh();
 };
 const cacheSnapshot = async () => {
@@ -269,7 +293,7 @@ const cacheSnapshot = async () => {
     if (!response.ok) throw new Error((await response.json()).message || 'Unable to cache offline snapshot.');
     const snapshot = await response.json();
     await putSnapshot(snapshot);
-    document.getElementById('last-synced-at').textContent = 'Last synced at: ' + new Date(snapshot.downloaded_at).toLocaleString();
+    document.getElementById('last-snapshot-at').textContent = 'Last snapshot cached at: ' + new Date(snapshot.downloaded_at).toLocaleString();
     await window.ZynqOfflineShell.refresh();
     return snapshot;
 };
@@ -287,6 +311,9 @@ const queueOfflineSale = async () => {
         if (Number(cached.stock_estimate || 0) < Number(item.quantity)) throw new Error('Offline sale blocked: local stock estimate is insufficient.');
         cached.stock_estimate = Number(cached.stock_estimate || 0) - Number(item.quantity);
     }
+
+    const downloaded = new Date(snapshot.downloaded_at);
+    if ((Date.now() - downloaded.getTime()) > staleSnapshotMinutes * 60 * 1000) throw new Error('Offline sale blocked: cached product, price, tax, and stock snapshot is stale.');
 
     const sale = buildSalePayload(snapshot);
     const now = new Date();
@@ -309,7 +336,7 @@ const queueOfflineSale = async () => {
     };
     await putOfflineSale(queued);
     await putSnapshot({...snapshot, products: Array.from(cachedProducts.values())});
-    document.getElementById('offline-reference-note').textContent = 'Queued offline sale ' + offlineReference + '. Pending sync, not final invoice.';
+    document.getElementById('offline-reference-note').textContent = 'PENDING SYNC - NOT FINAL OFFICIAL INVOICE. Temporary reference: ' + offlineReference + '.';
     cart = [];
     renderCart();
     await window.ZynqOfflineShell.refresh();
@@ -317,7 +344,10 @@ const queueOfflineSale = async () => {
 const syncPendingSales = async () => {
     if (!navigator.onLine) throw new Error('Cannot sync while offline.');
     const sales = (await window.ZynqOfflineShell.allSales()).filter(item => ['pending_sync', 'sync_failed', 'conflict'].includes(item.sync_status));
+    document.getElementById('sync-now').disabled = true;
+    document.getElementById('sync-now').textContent = 'Syncing...';
     for (const sale of sales) {
+        document.getElementById('last-synced-at').textContent = 'Last sync attempted at: ' + new Date().toLocaleString();
         const response = await fetch(syncUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf},
@@ -326,7 +356,7 @@ const syncPendingSales = async () => {
         const result = await response.json();
         if (response.ok && result.status === 'synced') {
             await deleteOfflineSale(sale.idempotency_key);
-            document.getElementById('last-synced-at').textContent = 'Last synced at: ' + new Date().toLocaleString();
+            document.getElementById('offline-reference-note').innerHTML = `Synced ${result.offline_reference} as official invoice ${result.invoice_number}. ${result.invoice_reprint_url ? `<a href="${result.invoice_reprint_url}">Reprint final invoice</a>` : ''}`;
         } else {
             sale.sync_status = result.status === 'conflict' ? 'conflict' : 'sync_failed';
             sale.last_error = result.message || 'Sync failed.';
@@ -334,6 +364,8 @@ const syncPendingSales = async () => {
             await putOfflineSale(sale);
         }
     }
+    document.getElementById('sync-now').disabled = !navigator.onLine;
+    document.getElementById('sync-now').textContent = 'Sync Now';
     await window.ZynqOfflineShell.refresh();
 };
 document.getElementById('cache-snapshot').addEventListener('click', async () => {
