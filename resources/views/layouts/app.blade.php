@@ -32,6 +32,10 @@
         .empty-state { padding: 2rem 1rem; text-align: center; color: #6c757d; }
         .nav-sidebar .nav-link { padding: .45rem .75rem; }
         .nav-sidebar .nav-icon { width: 1.35rem; }
+        .nav-sidebar .nav-treeview .nav-link { padding-left: 1.25rem; font-size: .88rem; }
+        .nav-sidebar .nav-treeview .nav-icon { font-size: .72rem; }
+        .nav-sidebar .nav-link.active { box-shadow: inset 3px 0 rgba(255,255,255,.85); }
+        .nav-sidebar .badge.right { right: .75rem; top: .55rem; }
         pre.zynq-json { max-height: 26rem; overflow: auto; white-space: pre-wrap; font-size: .78rem; }
     </style>
 </head>
@@ -51,6 +55,15 @@
             $syncPendingCount = (clone $syncCountQuery)->whereIn('status', ['pending_sync', 'syncing', 'failed'])->count();
             $syncConflictCount = (clone $syncCountQuery)->where('status', 'conflict')->count();
         }
+        $active = fn (array $patterns) => request()->routeIs(...$patterns);
+        $activeClass = fn (array $patterns) => $active($patterns) ? 'active' : '';
+        $treeClass = fn (array $patterns) => $active($patterns) ? 'menu-open' : '';
+        $treeLinkClass = fn (array $patterns) => $active($patterns) ? 'active' : '';
+        $user = auth()->user();
+        $canSalesNav = $user?->can('create sales') || $user?->can('view reports') || $user?->hasRole('Super Admin');
+        $canSyncNav = $user?->can('create sales') || $user?->can('view reports') || $user?->hasRole('Super Admin');
+        $canSetupNav = $user?->can('manage tenants') || $user?->can('manage branches') || $user?->can('manage terminals') || $user?->can('manage settings') || $user?->can('view compliance');
+        $canAdminNav = $user?->can('manage licenses') || $user?->can('manage settings');
     @endphp
     <nav class="main-header navbar navbar-expand navbar-white navbar-light">
         <ul class="navbar-nav">
@@ -79,53 +92,130 @@
         </a>
         <div class="sidebar">
             <nav class="mt-2">
-                <ul class="nav nav-pills nav-sidebar flex-column">
-                    <li class="nav-item"><a href="{{ route('dashboard') }}" class="nav-link"><i class="nav-icon fas fa-gauge"></i><p>Dashboard</p></a></li>
-                    @can('manage tenants')
-                        <li class="nav-item"><a href="{{ route('tenants.index') }}" class="nav-link">Tenants</a></li>
-                    @endcan
-                    @can('manage branches')
-                        <li class="nav-item"><a href="{{ route('branches.index') }}" class="nav-link">Branches</a></li>
-                    @endcan
-                    @can('manage terminals')
-                        <li class="nav-item"><a href="{{ route('terminals.index') }}" class="nav-link">Terminals</a></li>
-                    @endcan
-                    @can('manage inventory')
-                        <li class="nav-item"><a href="{{ route('categories.index') }}" class="nav-link">Product Categories</a></li>
-                        <li class="nav-item"><a href="{{ route('products.index') }}" class="nav-link" data-offline-unsupported>Products</a></li>
-                        <li class="nav-item"><a href="{{ route('inventory.index') }}" class="nav-link" data-offline-unsupported>Inventory</a></li>
-                        <li class="nav-item"><a href="{{ route('stock-movements.index') }}" class="nav-link" data-offline-unsupported>Stock Movements</a></li>
-                    @endcan
-                    @can('create sales')
-                        <li class="nav-item"><a href="{{ route('cash-sessions.index') }}" class="nav-link"><i class="nav-icon fas fa-cash-register"></i><p>Cash Sessions</p></a></li>
-                        <li class="nav-item"><a href="{{ route('pos.checkout') }}" class="nav-link"><i class="nav-icon fas fa-cart-shopping"></i><p>POS Checkout</p></a></li>
-                        <li class="nav-item"><a href="{{ route('sync.status') }}" class="nav-link"><i class="nav-icon fas fa-rotate"></i><p>Offline Sync Status @if($syncPendingCount)<span class="right badge bg-warning text-dark">{{ $syncPendingCount }}</span>@endif</p></a></li>
-                    @endcan
-                    @can('view reports')
-                        <li class="nav-item"><a href="{{ route('sync.conflicts') }}" class="nav-link"><i class="nav-icon fas fa-triangle-exclamation"></i><p>Offline Sync Conflicts @if($syncConflictCount)<span class="right badge bg-danger">{{ $syncConflictCount }}</span>@endif</p></a></li>
-                    @endcan
-                    @if (auth()->user()?->can('create sales') || auth()->user()?->can('view reports') || auth()->user()?->hasRole('Super Admin'))
-                        <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link">Sales</a></li>
+                <ul class="nav nav-pills nav-sidebar flex-column" data-widget="treeview" role="menu" data-accordion="false">
+                    <li class="nav-item">
+                        <a href="{{ route('dashboard') }}" class="nav-link {{ $activeClass(['dashboard']) }}">
+                            <i class="nav-icon fas fa-tachometer-alt"></i><p>Dashboard</p>
+                        </a>
+                    </li>
+
+                    @if ($canSalesNav)
+                        <li class="nav-item has-treeview {{ $treeClass(['pos.*', 'sales.*', 'cash-sessions.*', 'readings.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['pos.*', 'sales.*', 'cash-sessions.*', 'readings.*']) }}" role="button">
+                                <i class="nav-icon fas fa-cash-register"></i><p>POS Operations <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                @can('create sales')
+                                    <li class="nav-item"><a href="{{ route('pos.checkout') }}" class="nav-link {{ $activeClass(['pos.*']) }}"><i class="far fa-circle nav-icon"></i><p>POS Checkout</p></a></li>
+                                @endcan
+                                @if ($canSalesNav)
+                                    <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link {{ $activeClass(['sales.index', 'sales.show']) }}"><i class="fas fa-receipt nav-icon"></i><p>Sales</p></a></li>
+                                @endif
+                                @can('create sales')
+                                    <li class="nav-item"><a href="{{ route('cash-sessions.index') }}" class="nav-link {{ $activeClass(['cash-sessions.*', 'readings.*']) }}"><i class="fas fa-clock nav-icon"></i><p>Cash Sessions / Readings</p></a></li>
+                                @endcan
+                            </ul>
+                        </li>
                     @endif
+
+                    @if ($canSyncNav)
+                        <li class="nav-item has-treeview {{ $treeClass(['sync.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['sync.*']) }}" role="button">
+                                <i class="nav-icon fas fa-sync-alt"></i><p>Offline Sync <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                @can('create sales')
+                                    <li class="nav-item">
+                                        <a href="{{ route('sync.status') }}" class="nav-link {{ $activeClass(['sync.status']) }}">
+                                            <i class="fas fa-list-check nav-icon"></i><p>Sync Status @if($syncPendingCount)<span class="right badge bg-warning text-dark">{{ $syncPendingCount }}</span>@endif</p>
+                                        </a>
+                                    </li>
+                                @endcan
+                                @can('view reports')
+                                    <li class="nav-item">
+                                        <a href="{{ route('sync.conflicts') }}" class="nav-link {{ $activeClass(['sync.conflicts', 'sync.conflicts.*']) }}">
+                                            <i class="fas fa-exclamation-triangle nav-icon"></i><p>Conflicts @if($syncConflictCount)<span class="right badge bg-danger">{{ $syncConflictCount }}</span>@endif</p>
+                                        </a>
+                                    </li>
+                                @endcan
+                            </ul>
+                        </li>
+                    @endif
+
+                    @can('manage inventory')
+                        <li class="nav-item has-treeview {{ $treeClass(['products.*', 'categories.*', 'inventory.*', 'stock-movements.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['products.*', 'categories.*', 'inventory.*', 'stock-movements.*']) }}" role="button">
+                                <i class="nav-icon fas fa-boxes"></i><p>Inventory <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                <li class="nav-item"><a href="{{ route('products.index') }}" class="nav-link {{ $activeClass(['products.*']) }}" data-offline-unsupported><i class="fas fa-box nav-icon"></i><p>Products</p></a></li>
+                                <li class="nav-item"><a href="{{ route('categories.index') }}" class="nav-link {{ $activeClass(['categories.*']) }}"><i class="fas fa-tags nav-icon"></i><p>Categories</p></a></li>
+                                <li class="nav-item"><a href="{{ route('inventory.index') }}" class="nav-link {{ $activeClass(['inventory.*']) }}" data-offline-unsupported><i class="fas fa-warehouse nav-icon"></i><p>Stock</p></a></li>
+                                <li class="nav-item"><a href="{{ route('stock-movements.index') }}" class="nav-link {{ $activeClass(['stock-movements.*']) }}" data-offline-unsupported><i class="fas fa-arrow-right-arrow-left nav-icon"></i><p>Movements</p></a></li>
+                            </ul>
+                        </li>
+                    @endcan
+
                     @can('view reports')
-                        <li class="nav-item"><a href="{{ route('reports.vat-sales') }}" class="nav-link" data-offline-unsupported>VAT Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.non-vat-sales') }}" class="nav-link" data-offline-unsupported>Non-VAT Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.discounts') }}" class="nav-link" data-offline-unsupported>Discount Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.daily-sales') }}" class="nav-link" data-offline-unsupported>Daily Sales Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.voids') }}" class="nav-link" data-offline-unsupported>Void Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.refunds') }}" class="nav-link" data-offline-unsupported>Refund Report</a></li>
-                        <li class="nav-item"><a href="{{ route('reports.audit-trail') }}" class="nav-link" data-offline-unsupported>Audit Trail</a></li>
+                        <li class="nav-item has-treeview {{ $treeClass(['reports.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['reports.*']) }}" role="button">
+                                <i class="nav-icon fas fa-chart-line"></i><p>Reports <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                <li class="nav-item"><a href="{{ route('reports.daily-sales') }}" class="nav-link {{ $activeClass(['reports.daily-sales']) }}" data-offline-unsupported><i class="fas fa-calendar-day nav-icon"></i><p>Daily Sales</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.vat-sales') }}" class="nav-link {{ $activeClass(['reports.vat-sales']) }}" data-offline-unsupported><i class="fas fa-percent nav-icon"></i><p>VAT Sales</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.non-vat-sales') }}" class="nav-link {{ $activeClass(['reports.non-vat-sales']) }}" data-offline-unsupported><i class="fas fa-file-circle-xmark nav-icon"></i><p>Non-VAT Sales</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.discounts') }}" class="nav-link {{ $activeClass(['reports.discounts']) }}" data-offline-unsupported><i class="fas fa-ticket nav-icon"></i><p>Discounts</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.voids') }}" class="nav-link {{ $activeClass(['reports.voids']) }}" data-offline-unsupported><i class="fas fa-ban nav-icon"></i><p>Voids</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.refunds') }}" class="nav-link {{ $activeClass(['reports.refunds']) }}" data-offline-unsupported><i class="fas fa-rotate-left nav-icon"></i><p>Refunds</p></a></li>
+                                <li class="nav-item"><a href="{{ route('reports.audit-trail') }}" class="nav-link {{ $activeClass(['reports.audit-trail']) }}" data-offline-unsupported><i class="fas fa-shield-halved nav-icon"></i><p>Audit Trail</p></a></li>
+                            </ul>
+                        </li>
                     @endcan
-                    @can('manage settings')
-                        <li class="nav-item"><a href="{{ route('onboarding.index') }}" class="nav-link">Onboarding Wizard</a></li>
-                        <li class="nav-item"><a href="{{ route('settings.bir.edit') }}" class="nav-link">BIR Info Setup</a></li>
-                        <li class="nav-item"><a href="{{ route('settings.invoice.edit') }}" class="nav-link">Invoice Settings</a></li>
-                        <li class="nav-item"><a href="{{ route('invoice-preview.show') }}" class="nav-link">Invoice Preview</a></li>
-                        <li class="nav-item"><a href="{{ route('settings.edit') }}" class="nav-link" data-offline-unsupported>Settings</a></li>
-                    @endcan
-                    @can('view compliance')
-                        <li class="nav-item"><a href="{{ route('compliance.checklist') }}" class="nav-link">Compliance</a></li>
-                    @endcan
+
+                    @if ($canSetupNav)
+                        <li class="nav-item has-treeview {{ $treeClass(['tenants.*', 'branches.*', 'terminals.*', 'settings.bir.*', 'settings.invoice.*', 'invoice-preview.*', 'compliance.*', 'onboarding.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['tenants.*', 'branches.*', 'terminals.*', 'settings.bir.*', 'settings.invoice.*', 'invoice-preview.*', 'compliance.*', 'onboarding.*']) }}" role="button">
+                                <i class="nav-icon fas fa-clipboard-check"></i><p>Setup / Compliance <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                @can('manage tenants')
+                                    <li class="nav-item"><a href="{{ route('tenants.index') }}" class="nav-link {{ $activeClass(['tenants.index', 'tenants.create', 'tenants.edit']) }}"><i class="fas fa-building nav-icon"></i><p>Tenants</p></a></li>
+                                @endcan
+                                @can('manage branches')
+                                    <li class="nav-item"><a href="{{ route('branches.index') }}" class="nav-link {{ $activeClass(['branches.*']) }}"><i class="fas fa-code-branch nav-icon"></i><p>Branches</p></a></li>
+                                @endcan
+                                @can('manage terminals')
+                                    <li class="nav-item"><a href="{{ route('terminals.index') }}" class="nav-link {{ $activeClass(['terminals.*']) }}"><i class="fas fa-desktop nav-icon"></i><p>Terminals</p></a></li>
+                                @endcan
+                                @can('manage settings')
+                                    <li class="nav-item"><a href="{{ route('settings.bir.edit') }}" class="nav-link {{ $activeClass(['settings.bir.*']) }}"><i class="fas fa-certificate nav-icon"></i><p>BIR Info</p></a></li>
+                                    <li class="nav-item"><a href="{{ route('settings.invoice.edit') }}" class="nav-link {{ $activeClass(['settings.invoice.*']) }}"><i class="fas fa-file-invoice nav-icon"></i><p>Invoice Settings</p></a></li>
+                                    <li class="nav-item"><a href="{{ route('invoice-preview.show') }}" class="nav-link {{ $activeClass(['invoice-preview.*']) }}"><i class="fas fa-eye nav-icon"></i><p>Invoice Preview</p></a></li>
+                                    <li class="nav-item"><a href="{{ route('onboarding.index') }}" class="nav-link {{ $activeClass(['onboarding.*']) }}"><i class="fas fa-list-check nav-icon"></i><p>Onboarding</p></a></li>
+                                @endcan
+                                @can('view compliance')
+                                    <li class="nav-item"><a href="{{ route('compliance.checklist') }}" class="nav-link {{ $activeClass(['compliance.*']) }}"><i class="fas fa-clipboard-list nav-icon"></i><p>Compliance Checklist</p></a></li>
+                                @endcan
+                            </ul>
+                        </li>
+                    @endif
+
+                    @if ($canAdminNav)
+                        <li class="nav-item has-treeview {{ $treeClass(['settings.edit', 'tenants.license.*']) }}">
+                            <a href="#" class="nav-link {{ $treeLinkClass(['settings.edit', 'tenants.license.*']) }}" role="button">
+                                <i class="nav-icon fas fa-users-cog"></i><p>Administration <i class="right fas fa-angle-left"></i></p>
+                            </a>
+                            <ul class="nav nav-treeview">
+                                @if ($user?->tenant_id && $user?->can('manage licenses'))
+                                    <li class="nav-item"><a href="{{ route('tenants.license.edit', $user->tenant_id) }}" class="nav-link {{ $activeClass(['tenants.license.*']) }}"><i class="fas fa-key nav-icon"></i><p>Licensing</p></a></li>
+                                @endif
+                                @can('manage settings')
+                                    <li class="nav-item"><a href="{{ route('settings.edit') }}" class="nav-link {{ $activeClass(['settings.edit']) }}" data-offline-unsupported><i class="fas fa-cogs nav-icon"></i><p>Settings</p></a></li>
+                                @endcan
+                            </ul>
+                        </li>
+                    @endif
                 </ul>
             </nav>
         </div>
@@ -223,6 +313,36 @@ window.ZynqOfflineShell = (() => {
     document.addEventListener('DOMContentLoaded', refresh);
     return {openDb, allSales, refresh};
 })();
+
+document.addEventListener('DOMContentLoaded', () => {
+    const treeParents = document.querySelectorAll('.nav-sidebar .nav-item > .nav-link[href="#"]');
+
+    document.querySelectorAll('.nav-sidebar .nav-treeview').forEach(tree => {
+        if (tree.parentElement?.classList.contains('menu-open')) {
+            tree.style.display = 'block';
+        } else {
+            tree.style.display = 'none';
+        }
+    });
+
+    treeParents.forEach(link => {
+        link.addEventListener('click', event => {
+            const parent = link.closest('.nav-item');
+            const tree = parent?.querySelector(':scope > .nav-treeview');
+            if (! tree) return;
+
+            event.preventDefault();
+            event.stopImmediatePropagation();
+
+            const isOpen = parent.classList.toggle('menu-open');
+            if (window.jQuery) {
+                window.jQuery(tree).stop(true, true)[isOpen ? 'slideDown' : 'slideUp'](180);
+            } else {
+                tree.style.display = isOpen ? 'block' : 'none';
+            }
+        });
+    });
+});
 </script>
 @stack('scripts')
 </body>

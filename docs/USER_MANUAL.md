@@ -6,6 +6,8 @@ This manual describes MVP user workflows. Screen labels may change during client
 
 Users sign in with their assigned email and password. Access depends on role permissions.
 
+The sidebar is organized into compact categories such as POS Operations, Offline Sync, Inventory, Reports, and Setup / Compliance. The current page is highlighted, and expanded categories stay open when one of their child pages is active.
+
 ## POS Checkout
 
 1. Open a cash session for the current branch and terminal.

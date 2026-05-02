@@ -4,6 +4,8 @@
 
 Super Admin users manage tenants, licensing, and global setup access.
 
+The AdminLTE sidebar is grouped by workflow area and highlights the active page. Parent categories open automatically when a child page is active, helping admins stay oriented while moving between setup, reports, offline sync, and administration screens.
+
 Tasks:
 - Create and update tenants.
 - Manage license status, subscription expiry, grace period, and disabled state.
