@@ -29,7 +29,9 @@ class PosController extends Controller
             'sku' => $product->sku,
             'barcode' => $product->barcode,
             'name' => $product->name,
+            'unit' => $product->unit,
             'price' => (float) $product->selling_price,
+            'tax_type' => $product->tax_type,
         ])->values();
 
         return view('pos.checkout', compact('branches', 'terminals', 'products', 'productPayload', 'compliance'));

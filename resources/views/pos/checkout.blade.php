@@ -3,6 +3,18 @@
 @section('content')
 <form method="post" action="{{ route('pos.sales.store') }}" id="sale-form">
     @csrf
+    <div id="offline-warning" class="alert alert-danger d-none">
+        Offline mode is active. Sales created now are pending sync and are not final BIR invoices until the server assigns an official invoice number.
+    </div>
+    <div class="card mb-3">
+        <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="cache-snapshot">Cache Offline Snapshot</button>
+            <button type="button" class="btn btn-outline-success btn-sm" id="sync-now">Sync Now</button>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ route('sync.status') }}">Sync Status</a>
+            <a class="btn btn-outline-danger btn-sm" href="{{ route('sync.conflicts') }}">Conflicts</a>
+            <span class="text-muted" id="last-synced-at">Last synced at: never</span>
+        </div>
+    </div>
     <div class="row">
         <div class="col-lg-8">
             <div class="card">
@@ -108,12 +120,14 @@
                         <input name="payments[2][reference_number]" class="form-control">
                     </div>
                     <button class="btn btn-primary w-100">Complete Sale</button>
+                    <p class="text-muted small mt-2 mb-0" id="offline-reference-note"></p>
                 </div>
             </div>
         </div>
     </div>
 </form>
 
+@push('scripts')
 <script>
 const products = {{ Js::from($productPayload) }};
 let cart = [];
@@ -169,5 +183,174 @@ document.addEventListener('click', event => {
 ['cash-amount', 'cash-tendered', 'card-amount', 'wallet-amount', 'discount-value'].forEach(id => document.getElementById(id).addEventListener('input', renderCart));
 document.querySelector('[name="discounts[0][value_type]"]').addEventListener('change', renderCart);
 document.querySelector('[name="discounts[0][discount_type]"]').addEventListener('change', renderCart);
+
+const dbName = 'zynq-pos-offline';
+const snapshotKey = 'current-pos-snapshot';
+const csrf = document.querySelector('meta[name="csrf-token"]').content;
+const snapshotUrl = @json(route('sync.snapshot'));
+const syncUrl = @json(route('sync.offline-sales.store'));
+const getField = name => document.querySelector(`[name="${name}"]`);
+const stable = value => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === 'object') {
+        return Object.keys(value).sort().reduce((sorted, key) => {
+            sorted[key] = stable(value[key]);
+            return sorted;
+        }, {});
+    }
+    return value;
+};
+const sha256 = async value => {
+    const encoded = new TextEncoder().encode(JSON.stringify(stable(value)));
+    const digest = await crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+};
+const withStore = async (name, mode, callback) => {
+    const db = await window.ZynqOfflineShell.openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(name, mode);
+        const result = callback(tx.objectStore(name));
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = () => reject(tx.error);
+    });
+};
+const requestFromStore = async (name, mode, callback) => {
+    const db = await window.ZynqOfflineShell.openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(name, mode);
+        const req = callback(tx.objectStore(name));
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+};
+const putOfflineSale = sale => withStore('offline_sales', 'readwrite', store => store.put(sale));
+const deleteOfflineSale = id => withStore('offline_sales', 'readwrite', store => store.delete(id));
+const putSnapshot = snapshot => withStore('snapshots', 'readwrite', store => store.put({key: snapshotKey, ...snapshot}));
+const getSnapshot = () => requestFromStore('snapshots', 'readonly', store => store.get(snapshotKey));
+const cleanPayments = () => [0, 1, 2].map(index => ({
+    payment_method: getField(`payments[${index}][payment_method]`)?.value,
+    amount: Number(getField(`payments[${index}][amount]`)?.value || 0),
+    amount_tendered: getField(`payments[${index}][amount_tendered]`)?.value || null,
+    reference_number: getField(`payments[${index}][reference_number]`)?.value || null,
+})).filter(payment => payment.payment_method && payment.amount > 0);
+const cleanDiscounts = () => {
+    const type = getField('discounts[0][discount_type]').value;
+    const value = Number(getField('discounts[0][value]').value || 0);
+    if (!type || value <= 0) return [];
+    return [{
+        discount_type: type,
+        value_type: getField('discounts[0][value_type]').value,
+        value,
+        reason: getField('discounts[0][reason]').value || null,
+        reference_number: null,
+        approved_by_user_id: null,
+    }];
+};
+const buildSalePayload = snapshot => ({
+    items: cart.map(item => ({
+        product_id: item.id,
+        quantity: Number(item.quantity),
+        unit_price: Number(item.price),
+        tax_type: item.tax_type || 'VATABLE',
+    })),
+    payments: cleanPayments(),
+    discounts: cleanDiscounts(),
+});
+const updateOfflineUi = () => {
+    document.getElementById('offline-warning').classList.toggle('d-none', navigator.onLine);
+    window.ZynqOfflineShell.refresh();
+};
+const cacheSnapshot = async () => {
+    const params = new URLSearchParams({
+        branch_id: getField('branch_id').value,
+        terminal_id: getField('terminal_id').value,
+    });
+    const response = await fetch(snapshotUrl + '?' + params.toString(), {headers: {'Accept': 'application/json'}});
+    if (!response.ok) throw new Error((await response.json()).message || 'Unable to cache offline snapshot.');
+    const snapshot = await response.json();
+    await putSnapshot(snapshot);
+    document.getElementById('last-synced-at').textContent = 'Last synced at: ' + new Date(snapshot.downloaded_at).toLocaleString();
+    await window.ZynqOfflineShell.refresh();
+    return snapshot;
+};
+const queueOfflineSale = async () => {
+    const snapshot = await getSnapshot();
+    if (!snapshot) throw new Error('No offline snapshot is cached for this terminal.');
+    if (!snapshot.cash_session || snapshot.cash_session.status !== 'open') throw new Error('Offline sale blocked: no cached open cash session.');
+    if (!snapshot.terminal.compliant) throw new Error('Offline sale blocked: cached terminal compliance is incomplete.');
+    if (cart.length === 0) throw new Error('Sale must contain at least one product.');
+
+    const cachedProducts = new Map((snapshot.products || []).map(product => [Number(product.id), product]));
+    for (const item of cart) {
+        const cached = cachedProducts.get(Number(item.id));
+        if (!cached) throw new Error('Offline sale blocked: cart contains a product outside the cached snapshot.');
+        if (Number(cached.stock_estimate || 0) < Number(item.quantity)) throw new Error('Offline sale blocked: local stock estimate is insufficient.');
+        cached.stock_estimate = Number(cached.stock_estimate || 0) - Number(item.quantity);
+    }
+
+    const sale = buildSalePayload(snapshot);
+    const now = new Date();
+    const idempotencyKey = crypto.randomUUID();
+    const offlineReference = 'OFF-' + snapshot.terminal.terminal_code + '-' + now.getTime();
+    const queued = {
+        idempotency_key: idempotencyKey,
+        offline_reference: offlineReference,
+        tenant_id: snapshot.tenant.id,
+        branch_id: snapshot.branch.id,
+        terminal_id: snapshot.terminal.id,
+        cashier_id: snapshot.cashier.id,
+        cash_session_id: snapshot.cash_session.id,
+        created_offline_at: now.toISOString(),
+        payload_hash: await sha256(sale),
+        tax_snapshot: {vat_rate: Number(snapshot.vat_settings.rate)},
+        sale,
+        sync_status: 'pending_sync',
+        last_error: null,
+    };
+    await putOfflineSale(queued);
+    await putSnapshot({...snapshot, products: Array.from(cachedProducts.values())});
+    document.getElementById('offline-reference-note').textContent = 'Queued offline sale ' + offlineReference + '. Pending sync, not final invoice.';
+    cart = [];
+    renderCart();
+    await window.ZynqOfflineShell.refresh();
+};
+const syncPendingSales = async () => {
+    if (!navigator.onLine) throw new Error('Cannot sync while offline.');
+    const sales = (await window.ZynqOfflineShell.allSales()).filter(item => ['pending_sync', 'sync_failed', 'conflict'].includes(item.sync_status));
+    for (const sale of sales) {
+        const response = await fetch(syncUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf},
+            body: JSON.stringify(sale),
+        });
+        const result = await response.json();
+        if (response.ok && result.status === 'synced') {
+            await deleteOfflineSale(sale.idempotency_key);
+            document.getElementById('last-synced-at').textContent = 'Last synced at: ' + new Date().toLocaleString();
+        } else {
+            sale.sync_status = result.status === 'conflict' ? 'conflict' : 'sync_failed';
+            sale.last_error = result.message || 'Sync failed.';
+            sale.conflicts = result.conflicts || [];
+            await putOfflineSale(sale);
+        }
+    }
+    await window.ZynqOfflineShell.refresh();
+};
+document.getElementById('cache-snapshot').addEventListener('click', async () => {
+    try { await cacheSnapshot(); } catch (error) { alert(error.message); }
+});
+document.getElementById('sync-now').addEventListener('click', async () => {
+    try { await syncPendingSales(); } catch (error) { alert(error.message); }
+});
+document.getElementById('sale-form').addEventListener('submit', async event => {
+    if (navigator.onLine) return;
+    event.preventDefault();
+    try { await queueOfflineSale(); } catch (error) { alert(error.message); }
+});
+window.addEventListener('online', () => syncPendingSales().catch(() => window.ZynqOfflineShell.refresh()));
+window.addEventListener('online', updateOfflineUi);
+window.addEventListener('offline', updateOfflineUi);
+document.addEventListener('DOMContentLoaded', updateOfflineUi);
 </script>
+@endpush
 @endsection

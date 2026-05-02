@@ -48,3 +48,10 @@ php artisan storage:link
 ## Compliance Operations
 
 Use the compliance checklist, invoice preview, BIR setup page, and sample artifacts for CPA/BIR/RDO review. Final interpretation must be confirmed externally.
+## Offline Sync Administration
+
+Offline sync records are available from **Offline Sync**. Conflicts appear under **Conflicts** and require manager/admin review.
+
+Common conflicts include inactive products, changed prices, changed tax settings, insufficient server stock, terminal compliance issues, and cash sessions that were closed before sync. ZYNQ does not silently rewrite completed offline sale data.
+
+Offline mode uses temporary references until the server creates the official sale and invoice number. This keeps invoice sequencing server-controlled. Final CPA, BIR, and RDO review is required before enabling offline sales in production.

@@ -45,3 +45,12 @@ Void and refund actions require manager/admin approval and a reason. Stock retur
 ## Compliance Note
 
 ZYNQ is BIR-ready, not automatically BIR-approved. Client-specific registration and PTU approval remain required.
+## Offline POS Sync
+
+When the POS is online, use **Cache Offline Snapshot** before operating in locations with unstable connectivity. The snapshot stores only POS data needed for selling, such as active products, prices, tax settings, terminal details, cashier details, and the current open cash session.
+
+If the browser goes offline, ZYNQ shows an offline warning. Cashiers may complete sales only from cached products and only when a cached open cash session exists. Offline receipts use temporary references and are pending sync, not final official invoices.
+
+When connectivity returns, use **Sync Now** from POS Checkout. Synced sales receive official invoice numbers. Items that show as conflicts require manager/admin review.
+
+Unsupported offline actions include voids/refunds, report exports, tenant/settings changes, and product or inventory management.

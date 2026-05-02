@@ -20,3 +20,8 @@ ZYNQ is BIR-ready, not automatically BIR-approved. Final requirements must be co
 ## Explicit Disclaimer
 
 This system is BIR-ready, not automatically BIR-approved. Client-specific registration, PTU processing, and BIR/RDO/CPA review remain required.
+## Offline Sync Notes
+
+Offline sync is BIR-ready as a technical foundation, not automatically BIR-approved. Offline receipts use temporary references and must be marked pending sync. Official invoice numbers are assigned only by the server after successful sync through the existing invoice sequence service.
+
+Final CPA, BIR, and RDO review is still required before enabling offline sales in production.

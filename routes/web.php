@@ -13,6 +13,7 @@ use App\Domains\Reports\Http\Controllers\ReversalReportController;
 use App\Domains\Reports\Http\Controllers\TaxReportController;
 use App\Domains\Sales\Http\Controllers\CashSessionController;
 use App\Domains\Sales\Http\Controllers\InvoiceController;
+use App\Domains\Sales\Http\Controllers\OfflineSyncController;
 use App\Domains\Sales\Http\Controllers\PosController;
 use App\Domains\Sales\Http\Controllers\SaleController;
 use App\Domains\Sales\Http\Controllers\SaleReversalController;
@@ -54,6 +55,10 @@ Route::middleware(['auth', 'tenant.active'])->group(function (): void {
     Route::get('pos', [PosController::class, 'index'])->middleware('permission:create sales')->name('pos.checkout');
     Route::get('pos/products', [PosController::class, 'products'])->middleware('permission:create sales')->name('pos.products');
     Route::post('pos/sales', [PosController::class, 'store'])->middleware('permission:create sales')->name('pos.sales.store');
+    Route::get('sync/offline-snapshot', [OfflineSyncController::class, 'snapshot'])->middleware('permission:create sales')->name('sync.snapshot');
+    Route::post('sync/offline-sales', [OfflineSyncController::class, 'store'])->middleware('permission:create sales')->name('sync.offline-sales.store');
+    Route::get('sync/status', [OfflineSyncController::class, 'status'])->middleware('permission:create sales')->name('sync.status');
+    Route::get('sync/conflicts', [OfflineSyncController::class, 'conflicts'])->middleware('permission:create sales')->name('sync.conflicts');
     Route::resource('cash-sessions', CashSessionController::class)->only(['index', 'create', 'store', 'show'])->middleware('permission:create sales');
     Route::post('cash-sessions/{cash_session}/close', [CashSessionController::class, 'close'])->middleware('permission:create sales')->name('cash-sessions.close');
     Route::resource('sales', SaleController::class)->only(['index', 'show'])->middleware('role_or_permission:Super Admin|view reports|create sales');

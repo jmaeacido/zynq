@@ -1,18 +1,18 @@
 # Offline Sync Plan
 
-ZYNQ is SaaS-ready and multi-branch ready, but full offline synchronization is not implemented in the MVP. This plan keeps the current schema compatible with a future offline-capable POS client.
+ZYNQ is SaaS-ready and multi-branch ready. A browser-based offline sync foundation now exists, but it remains a post-MVP feature that requires client-specific review before production use.
 
 ## Target Design
 
-- Local POS client uses SQLite for products, branches, terminals, invoice sequences, cash sessions, and queued transactions.
+- Browser POS client uses IndexedDB for snapshots and queued sale payloads.
 - Server remains the source of truth for tenants, licensing, reports, audit logs, and final synchronization state.
 - Offline transactions are written to a local sync queue with immutable payloads and hashes.
-- Reconnect flow posts queued sales, stock movements, and cash session events to server APIs in original order.
+- Reconnect flow posts queued sales to server APIs.
 
 ## Sync-Compatible Rules
 
 - Financial records are append-only.
-- Invoice numbers must be reserved or generated using a branch/terminal-aware range strategy before offline selling is enabled.
+- Current foundation uses temporary offline references and assigns official invoice numbers only during server sync.
 - Tenant, branch, terminal, and user identifiers must be carried in every queued payload.
 - Stock movements must remain append-only, with reversal movements instead of edits.
 - Audit events should be queued locally and replayed to the server.
@@ -38,13 +38,19 @@ ZYNQ is SaaS-ready and multi-branch ready, but full offline synchronization is n
 - `financial_ledger_entries`
 - `audit_logs`
 
+## Implemented
+
+- IndexedDB snapshot and pending sale queue.
+- Snapshot endpoint for tenant, branch, terminal, products, tax settings, cash session, and cashier info.
+- Authenticated sync endpoint with idempotency.
+- Conflict detection and conflict list.
+- Audit logs for offline snapshot and sync outcomes.
+
 ## Not Yet Implemented
 
-- Local SQLite POS runtime.
-- API token provisioning for terminals.
-- Conflict resolution UI.
+- API token provisioning for dedicated terminal apps.
+- Admin conflict resolution actions.
 - Invoice range reservation.
-- Sync queue processor.
-- Server-side idempotency keys.
+- Full offline print template with final/synced reprint lifecycle.
 
 CPA, BIR, and RDO confirmation is required before enabling offline sales in production.

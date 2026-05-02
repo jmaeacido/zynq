@@ -15,6 +15,12 @@
             <li class="nav-item"><a class="nav-link" data-widget="pushmenu" href="#">Menu</a></li>
         </ul>
         <ul class="navbar-nav ms-auto">
+            @auth
+                <li class="nav-item px-3 align-self-center">
+                    <span id="zynq-offline-indicator" class="badge bg-success">Online</span>
+                    <span id="zynq-pending-sync" class="badge bg-secondary">0 pending</span>
+                </li>
+            @endauth
             <li class="nav-item px-3 align-self-center">{{ auth()->user()->name ?? '' }}</li>
             <li class="nav-item">
                 <form method="post" action="{{ route('logout') }}">
@@ -51,6 +57,7 @@
                     @can('create sales')
                         <li class="nav-item"><a href="{{ route('cash-sessions.index') }}" class="nav-link">Cash Sessions</a></li>
                         <li class="nav-item"><a href="{{ route('pos.checkout') }}" class="nav-link">POS Checkout</a></li>
+                        <li class="nav-item"><a href="{{ route('sync.status') }}" class="nav-link">Offline Sync</a></li>
                     @endcan
                     @if (auth()->user()?->can('create sales') || auth()->user()?->can('view reports') || auth()->user()?->hasRole('Super Admin'))
                         <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link">Sales</a></li>
@@ -120,5 +127,52 @@
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/admin-lte@3.2/dist/js/adminlte.min.js"></script>
+<script>
+window.ZynqOfflineShell = (() => {
+    const dbName = 'zynq-pos-offline';
+    const version = 1;
+    const openDb = () => new Promise((resolve, reject) => {
+        const request = indexedDB.open(dbName, version);
+        request.onupgradeneeded = event => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains('offline_sales')) db.createObjectStore('offline_sales', {keyPath: 'idempotency_key'});
+            if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', {keyPath: 'key'});
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    const allSales = async () => {
+        const db = await openDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('offline_sales', 'readonly');
+            const req = tx.objectStore('offline_sales').getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        });
+    };
+    const refresh = async () => {
+        const indicator = document.getElementById('zynq-offline-indicator');
+        const pending = document.getElementById('zynq-pending-sync');
+        if (indicator) {
+            indicator.textContent = navigator.onLine ? 'Online' : 'Offline';
+            indicator.className = 'badge ' + (navigator.onLine ? 'bg-success' : 'bg-danger');
+        }
+        if (pending) {
+            const count = (await allSales()).filter(item => ['pending_sync', 'sync_failed', 'conflict'].includes(item.sync_status)).length;
+            pending.textContent = count + ' pending';
+            pending.className = 'badge ' + (count > 0 ? 'bg-warning text-dark' : 'bg-secondary');
+        }
+        document.querySelectorAll('[data-offline-unsupported]').forEach(link => {
+            if (navigator.onLine) link.classList.remove('disabled');
+            else link.classList.add('disabled');
+        });
+    };
+    window.addEventListener('online', refresh);
+    window.addEventListener('offline', refresh);
+    document.addEventListener('DOMContentLoaded', refresh);
+    return {openDb, allSales, refresh};
+})();
+</script>
+@stack('scripts')
 </body>
 </html>
