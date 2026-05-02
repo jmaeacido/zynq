@@ -51,10 +51,11 @@
                     @can('create sales')
                         <li class="nav-item"><a href="{{ route('cash-sessions.index') }}" class="nav-link">Cash Sessions</a></li>
                         <li class="nav-item"><a href="{{ route('pos.checkout') }}" class="nav-link">POS Checkout</a></li>
-                        <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link">Sales</a></li>
                     @endcan
-                    @can('view reports')
+                    @if (auth()->user()?->can('create sales') || auth()->user()?->can('view reports') || auth()->user()?->hasRole('Super Admin'))
                         <li class="nav-item"><a href="{{ route('sales.index') }}" class="nav-link">Sales</a></li>
+                    @endif
+                    @can('view reports')
                         <li class="nav-item"><a href="{{ route('reports.vat-sales') }}" class="nav-link">VAT Sales Report</a></li>
                         <li class="nav-item"><a href="{{ route('reports.non-vat-sales') }}" class="nav-link">Non-VAT Sales Report</a></li>
                         <li class="nav-item"><a href="{{ route('reports.discounts') }}" class="nav-link">Discount Report</a></li>

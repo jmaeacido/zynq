@@ -2,6 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Domains\Branches\Models\Branch;
+use App\Domains\Tenancy\Models\Tenant;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
@@ -51,5 +53,55 @@ class DatabaseSeeder extends Seeder
         );
 
         $admin->assignRole('Super Admin');
+
+        $demoTenant = Tenant::firstOrCreate(
+            ['tin' => '000-000-000-000'],
+            [
+                'business_name' => 'ZYNQ Demo Tenant',
+                'trade_name' => 'ZYNQ Demo',
+                'registered_address' => 'Demo Registered Address',
+                'taxpayer_type' => 'VAT',
+                'bir_rdo_code' => '000',
+                'contact_name' => 'Demo Contact',
+                'contact_email' => 'demo@zynq.local',
+                'license_status' => 'active',
+                'invoice_footer' => 'Demo account only. BIR-ready, not automatically BIR-approved.',
+                'active' => true,
+            ]
+        );
+
+        $demoBranch = Branch::firstOrCreate(
+            ['tenant_id' => $demoTenant->id, 'branch_code' => 'DEMO'],
+            [
+                'branch_name' => 'Demo Branch',
+                'address' => 'Demo Branch Address',
+                'bir_registered_address' => 'Demo BIR Registered Address',
+                'status' => 'active',
+            ]
+        );
+
+        $demoPassword = env('ZYNQ_DEMO_USER_PASSWORD', 'password');
+        $demoUsers = [
+            'Tenant Admin' => ['name' => 'ZYNQ Tenant Admin', 'email' => 'tenant.admin@zynq.local'],
+            'Branch Manager' => ['name' => 'ZYNQ Branch Manager', 'email' => 'branch.manager@zynq.local'],
+            'Cashier' => ['name' => 'ZYNQ Cashier', 'email' => 'cashier@zynq.local'],
+            'Auditor' => ['name' => 'ZYNQ Auditor', 'email' => 'auditor@zynq.local'],
+            'Inventory Staff' => ['name' => 'ZYNQ Inventory Staff', 'email' => 'inventory@zynq.local'],
+        ];
+
+        foreach ($demoUsers as $roleName => $userData) {
+            $user = User::firstOrCreate(
+                ['email' => $userData['email']],
+                [
+                    'tenant_id' => $demoTenant->id,
+                    'branch_id' => $roleName === 'Tenant Admin' ? null : $demoBranch->id,
+                    'name' => $userData['name'],
+                    'password' => $demoPassword,
+                    'active' => true,
+                ]
+            );
+
+            $user->syncRoles([$roleName]);
+        }
     }
 }
