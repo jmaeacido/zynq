@@ -1,24 +1,27 @@
 @extends('layouts.app', ['heading' => 'Sale Details'])
 
 @section('content')
-<div class="mb-3">
-    <a class="btn btn-outline-primary" href="{{ route('sales.invoice.thermal', $sale) }}">Thermal Invoice</a>
-    <a class="btn btn-outline-primary" href="{{ route('sales.invoice.a4', $sale) }}">A4 Invoice</a>
+<div class="mb-2 d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary btn-sm" href="{{ route('sales.invoice.thermal', $sale) }}"><i class="fas fa-receipt me-1"></i>Thermal Invoice</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ route('sales.invoice.a4', $sale) }}"><i class="fas fa-file-invoice me-1"></i>A4 Invoice</a>
     @canany(['approve voids', 'approve refunds'])
-        <a class="btn btn-outline-danger" href="{{ route('sales.reversals.create', $sale) }}">Void / Refund</a>
+        <a class="btn btn-outline-danger btn-sm" href="{{ route('sales.reversals.create', $sale) }}"><i class="fas fa-rotate-left me-1"></i>Void / Refund</a>
     @endcanany
 </div>
 <div class="card">
-    <div class="card-header"><strong>{{ $sale->invoice_number }}</strong></div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>{{ $sale->invoice_number }}</strong>
+        <span class="badge bg-success">{{ $sale->status }}</span>
+    </div>
     <div class="card-body">
-        <dl class="row">
+        <dl class="row mb-2">
             <dt class="col-sm-3">Tenant</dt><dd class="col-sm-9">{{ $sale->tenant->business_name }}</dd>
             <dt class="col-sm-3">Branch</dt><dd class="col-sm-9">{{ $sale->branch->branch_name }}</dd>
             <dt class="col-sm-3">Terminal</dt><dd class="col-sm-9">{{ $sale->terminal->terminal_name }}</dd>
             <dt class="col-sm-3">Cashier</dt><dd class="col-sm-9">{{ $sale->cashier->name }}</dd>
-            <dt class="col-sm-3">Status</dt><dd class="col-sm-9">{{ $sale->status }}</dd>
+            <dt class="col-sm-3">Created</dt><dd class="col-sm-9">{{ $sale->created_at->toDayDateTimeString() }}</dd>
         </dl>
-        <table class="table table-striped">
+        <table class="table table-sm table-striped">
             <thead><tr><th>Item</th><th>Tax Type</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
             <tbody>
             @foreach ($sale->items as $item)
@@ -26,7 +29,7 @@
             @endforeach
             </tbody>
         </table>
-        <table class="table table-sm w-50 ms-auto">
+        <table class="table table-sm w-100 w-md-50 ms-auto">
             <tr><th>Subtotal</th><td class="text-end">{{ number_format((float) $sale->subtotal, 2) }}</td></tr>
             <tr><th>Discounts</th><td class="text-end">{{ number_format((float) $sale->discount_total, 2) }}</td></tr>
             <tr><th>VATable Sales</th><td class="text-end">{{ number_format((float) $sale->taxSummary?->vatable_sales, 2) }}</td></tr>

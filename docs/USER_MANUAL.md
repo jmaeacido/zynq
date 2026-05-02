@@ -47,10 +47,10 @@ Void and refund actions require manager/admin approval and a reason. Stock retur
 ZYNQ is BIR-ready, not automatically BIR-approved. Client-specific registration and PTU approval remain required.
 ## Offline POS Sync
 
-When the POS is online, use **Cache Offline Snapshot** before operating in locations with unstable connectivity. The snapshot stores only POS data needed for selling, such as active products, prices, tax settings, terminal details, cashier details, and the current open cash session.
+When the POS is online, use **Cache Offline Snapshot** before operating in locations with unstable connectivity. The compact POS toolbar shows online/offline state, pending sync count, last cached snapshot, last sync attempt, and stale snapshot warnings. The snapshot stores only POS data needed for selling, such as active products, prices, tax settings, terminal details, cashier details, and the current open cash session.
 
-If the browser goes offline, ZYNQ shows an offline warning. Cashiers may complete sales only from cached products and only when a cached open cash session exists. Offline receipts use temporary references and are pending sync, not final official invoices.
+If the browser goes offline, ZYNQ shows an offline warning and disables unsupported online-only actions with an explanation. Cashiers may complete sales only from cached products and only when a cached open cash session exists. Offline receipts use temporary references and clearly show **PENDING SYNC - NOT FINAL OFFICIAL INVOICE**.
 
-When connectivity returns, use **Sync Now** from POS Checkout. Synced sales receive official invoice numbers and the POS replaces the temporary reference with final invoice details and a reprint link. Items that show as conflicts require manager/admin review.
+When connectivity returns, use **Sync Now** from POS Checkout. SweetAlert2 shows loading, success, error, and conflict notices. Synced sales receive official invoice numbers and the POS replaces the temporary reference with final invoice details and a **Reprint final invoice** link. Items that show as conflicts require manager/admin review.
 
-Unsupported offline actions include voids/refunds, report exports, tenant/settings changes, and product or inventory management. POS shows online/offline state, pending count, last cached snapshot, last sync attempt, and stale snapshot warnings.
+Unsupported offline actions include voids/refunds, report exports, tenant/settings changes, and product or inventory management.

@@ -17,7 +17,7 @@
         TIN: {{ $sale->tenant->tin }}
     </div>
     <div class="col-5">
-        Invoice: {{ $sale->invoice_number }}<br>
+        Official Invoice: {{ $sale->invoice_number }}<br>
         Date: {{ $sale->created_at->format('Y-m-d H:i:s') }}<br>
         Branch: {{ $sale->branch->branch_code }}<br>
         Terminal: {{ $sale->terminal->terminal_code }}<br>
