@@ -46,13 +46,24 @@
                         </div>
                         <div class="col-md-4 mb-2">
                             <label class="form-label">Barcode / Search</label>
-                            <input id="product-search" class="form-control" list="product-options" placeholder="Scan barcode or type name">
+                            <input id="product-search" class="form-control" list="product-options" placeholder="Scan barcode or type name" autocomplete="off" autofocus>
                             <datalist id="product-options">
                                 @foreach ($products as $product)
                                     <option data-id="{{ $product->id }}" data-name="{{ $product->name }}" data-price="{{ $product->selling_price }}" value="{{ $product->barcode ?: $product->sku }}">{{ $product->name }}</option>
                                 @endforeach
                             </datalist>
+                            <div id="scan-feedback" class="small mt-1 text-muted" aria-live="polite">Ready to scan.</div>
                         </div>
+                    </div>
+                    <div class="alert alert-light border py-2 px-2 small mb-2" id="pos-shortcuts">
+                        <strong>Shortcuts:</strong>
+                        F2/Ctrl+F scan,
+                        Enter add/pay,
+                        +/- qty,
+                        Delete remove,
+                        F8 payment,
+                        F9 complete,
+                        Esc close.
                     </div>
                     <table class="table table-sm table-striped" id="cart-table">
                         <thead><tr><th>Item</th><th style="width:120px">Qty</th><th>Price</th><th>Total</th><th></th></tr></thead>
@@ -63,7 +74,7 @@
             </div>
         </div>
         <div class="col-lg-4">
-            <div class="card mb-2">
+            <div class="card mb-2" id="payment-panel">
                 <div class="card-header"><strong>Payment</strong></div>
                 <div class="card-body">
                     <dl class="row mb-2">
@@ -125,7 +136,8 @@
                         <label class="form-label">E-wallet reference</label>
                         <input name="payments[2][reference_number]" class="form-control">
                     </div>
-                    <button class="btn btn-primary w-100"><i class="fas fa-check me-1"></i>Complete Sale</button>
+                    <button class="btn btn-primary w-100" id="complete-sale"><i class="fas fa-check me-1"></i>Complete Sale</button>
+                    <div class="alert alert-success py-2 px-2 small mt-2 mb-0 d-none" id="receipt-actions"></div>
                     <div class="alert alert-info py-2 px-2 small mt-2 mb-0 d-none" id="offline-reference-note"></div>
                 </div>
             </div>
@@ -134,25 +146,68 @@
 </form>
 
 @push('scripts')
+<style>
+    #cart-table tbody tr.cart-selected > * {
+        background-color: rgba(13, 110, 253, .12);
+    }
+
+    #cart-table tbody tr {
+        cursor: pointer;
+    }
+</style>
 <script>
 const products = {{ Js::from($productPayload) }};
 let cart = [];
+let selectedCartIndex = null;
+let scanLocked = false;
+let saleSubmitting = false;
+let paymentManuallyEdited = false;
 const money = value => Number(value || 0).toFixed(2);
+const productSearch = document.getElementById('product-search');
+const saleForm = document.getElementById('sale-form');
+const completeSaleButton = document.getElementById('complete-sale');
+const scanFeedback = document.getElementById('scan-feedback');
+const receiptActions = document.getElementById('receipt-actions');
+const cashAmount = document.getElementById('cash-amount');
+const cashTendered = document.getElementById('cash-tendered');
+const cartTotal = () => Number(document.getElementById('total').textContent || 0);
+const toast = (icon, title, text = '') => {
+    if (window.Swal) {
+        Swal.fire({toast: true, position: 'top-end', icon, title, text, timer: 1400, showConfirmButton: false});
+    }
+};
+const focusScanner = () => {
+    productSearch.focus();
+    productSearch.select();
+};
+const setScanFeedback = (message, type = 'muted') => {
+    scanFeedback.className = `small mt-1 text-${type}`;
+    scanFeedback.textContent = message;
+};
+const safeRefocusScanner = () => window.setTimeout(focusScanner, 0);
 function renderCart() {
     const tbody = document.querySelector('#cart-table tbody');
     tbody.innerHTML = '';
     let total = 0;
+    if (cart.length === 0) {
+        selectedCartIndex = null;
+        tbody.insertAdjacentHTML('beforeend', '<tr class="text-muted"><td colspan="5" class="text-center py-4">Cart is empty. Scan an item to begin.</td></tr>');
+    }
     cart.forEach((item, index) => {
         const line = item.price * item.quantity;
         total += line;
-        tbody.insertAdjacentHTML('beforeend', `<tr>
+        tbody.insertAdjacentHTML('beforeend', `<tr class="${index === selectedCartIndex ? 'cart-selected' : ''}" data-index="${index}" tabindex="0">
             <td>${item.name}<input type="hidden" name="items[${index}][product_id]" value="${item.id}"></td>
-            <td><input name="items[${index}][quantity]" type="number" step="0.001" min="0.001" class="form-control form-control-sm cart-qty" data-index="${index}" value="${item.quantity}"></td>
+            <td><input name="items[${index}][quantity]" type="number" step="1" min="1" class="form-control form-control-sm cart-qty" data-index="${index}" value="${item.quantity}"></td>
             <td>${money(item.price)}</td>
-            <td>${money(line)}</td>
+            <td class="cart-line-total">${money(line)}</td>
             <td><button type="button" class="btn btn-sm btn-outline-danger remove-item" data-index="${index}"><i class="fas fa-trash me-1"></i>Remove</button></td>
         </tr>`);
     });
+    renderTotals();
+}
+function renderTotals() {
+    const total = cart.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
     const discountValue = Number(document.getElementById('discount-value').value || 0);
     const discountMode = document.querySelector('[name="discounts[0][value_type]"]').value;
     const discountType = document.querySelector('[name="discounts[0][discount_type]"]').value;
@@ -161,35 +216,255 @@ function renderCart() {
     document.getElementById('subtotal').textContent = money(total);
     document.getElementById('discount-total').textContent = money(discount);
     document.getElementById('total').textContent = money(netTotal);
+    if (!paymentManuallyEdited) {
+        cashAmount.value = money(netTotal);
+        cashTendered.value = money(netTotal);
+        document.getElementById('card-amount').value = '0';
+        document.getElementById('wallet-amount').value = '0';
+    }
     const paid = Number(document.getElementById('cash-amount').value || 0) + Number(document.getElementById('card-amount').value || 0) + Number(document.getElementById('wallet-amount').value || 0);
     const cashChange = Math.max(0, Number(document.getElementById('cash-tendered').value || 0) - Number(document.getElementById('cash-amount').value || 0));
     document.getElementById('change').textContent = money(cashChange + Math.max(0, paid - netTotal));
 }
+function selectCartRow(index) {
+    selectedCartIndex = cart[index] ? index : (cart.length ? cart.length - 1 : null);
+    updateCartSelectionClasses();
+}
+function updateCartSelectionClasses() {
+    document.querySelectorAll('#cart-table tbody tr[data-index]').forEach(row => {
+        row.classList.toggle('cart-selected', Number(row.dataset.index) === selectedCartIndex);
+    });
+}
+function normalizeProduct(product) {
+    return {id: Number(product.id), name: product.name, barcode: product.barcode, sku: product.sku, price: Number(product.price || product.selling_price), tax_type: product.tax_type};
+}
 function addProduct(product) {
+    product = normalizeProduct(product);
     const existing = cart.find(item => item.id === product.id);
-    if (existing) existing.quantity += 1;
-    else cart.push({...product, quantity: 1});
+    if (existing) {
+        existing.quantity = Number(existing.quantity || 0) + 1;
+        selectedCartIndex = cart.indexOf(existing);
+    } else {
+        cart.push({...product, quantity: 1});
+        selectedCartIndex = cart.length - 1;
+    }
+    renderCart();
+    setScanFeedback(`${product.name} added.`, 'success');
+    toast('success', 'Added', product.name);
+}
+function findLocalProduct(query, source = products) {
+    const normalized = query.trim().toLowerCase();
+    const compact = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const compactQuery = compact(query);
+    if (!normalized) return null;
+    return source.find(product => String(product.barcode || '').toLowerCase() === normalized)
+        || source.find(product => String(product.sku || '').toLowerCase() === normalized)
+        || source.find(product => compact(product.barcode) === compactQuery)
+        || source.find(product => compact(product.sku) === compactQuery)
+        || source.find(product => [product.name, product.sku, product.barcode].filter(Boolean).some(value => String(value).toLowerCase() === normalized || String(value).toLowerCase().includes(normalized)))
+        || null;
+}
+async function lookupProduct(query) {
+    const source = await offlineProducts();
+    const local = findLocalProduct(query, source);
+    if (local) return local;
+    if (!navigator.onLine) return null;
+    const response = await fetch(@json(route('pos.products')) + '?' + new URLSearchParams({q: query}), {headers: {'Accept': 'application/json'}});
+    if (!response.ok) return null;
+    const result = await response.json();
+    return findLocalProduct(query, result) || result[0] || null;
+}
+async function scanOrAddQuery() {
+    const query = productSearch.value.trim();
+    if (!query || scanLocked) {
+        safeRefocusScanner();
+        return;
+    }
+    scanLocked = true;
+    productSearch.disabled = true;
+    try {
+        const product = await lookupProduct(query);
+        productSearch.value = '';
+        if (!product) {
+            setScanFeedback(`No product found for "${query}".`, 'danger');
+            toast('error', 'Product not found', query);
+            return;
+        }
+        addProduct(product);
+    } finally {
+        productSearch.disabled = false;
+        scanLocked = false;
+        safeRefocusScanner();
+    }
+}
+function adjustSelectedQuantity(delta) {
+    if (selectedCartIndex === null || !cart[selectedCartIndex]) return;
+    const next = Number(cart[selectedCartIndex].quantity || 0) + delta;
+    if (next <= 0) {
+        setScanFeedback('Quantity cannot be zero or negative.', 'danger');
+        return;
+    }
+    cart[selectedCartIndex].quantity = next;
     renderCart();
 }
-document.getElementById('add-selected').addEventListener('click', async () => {
-    const query = document.getElementById('product-search').value.toLowerCase();
-    const source = await offlineProducts();
-    const product = source.find(p => [p.barcode, p.sku, p.name].filter(Boolean).some(value => String(value).toLowerCase() === query || String(value).toLowerCase().includes(query)));
-    if (product) addProduct({id: product.id, name: product.name, barcode: product.barcode, sku: product.sku, price: Number(product.price || product.selling_price), tax_type: product.tax_type});
-});
-document.addEventListener('input', event => {
-    if (event.target.classList.contains('cart-qty')) cart[event.target.dataset.index].quantity = Number(event.target.value || 0);
+async function removeSelectedItem() {
+    if (selectedCartIndex === null || !cart[selectedCartIndex]) return;
+    const item = cart[selectedCartIndex];
+    if (window.Swal) {
+        const result = await Swal.fire({icon: 'question', title: 'Remove item?', text: item.name, showCancelButton: true, confirmButtonText: 'Remove'});
+        if (!result.isConfirmed) return;
+    } else if (!confirm('Remove item?')) {
+        return;
+    }
+    cart.splice(selectedCartIndex, 1);
+    selectedCartIndex = Math.min(selectedCartIndex, cart.length - 1);
     renderCart();
-});
-document.addEventListener('click', event => {
-    if (event.target.classList.contains('remove-item')) {
-        cart.splice(event.target.dataset.index, 1);
+    safeRefocusScanner();
+}
+function focusPayment() {
+    document.getElementById('payment-panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+    cashAmount.focus();
+    cashAmount.select();
+}
+function validatePayment({showFeedback = true} = {}) {
+    const due = cartTotal();
+    const paid = Number(cashAmount.value || 0) + Number(document.getElementById('card-amount').value || 0) + Number(document.getElementById('wallet-amount').value || 0);
+    if (cart.length === 0) {
+        if (showFeedback) setScanFeedback('Cart is empty.', 'danger');
+        return false;
+    }
+    if (paid < due) {
+        if (showFeedback) {
+            setScanFeedback(`Payment is short by ${money(due - paid)}.`, 'danger');
+            toast('error', 'Insufficient payment', `Short by ${money(due - paid)}`);
+            focusPayment();
+        }
+        return false;
+    }
+    return true;
+}
+function syncCashToTotalIfEmpty() {
+    if (Number(cashAmount.value || 0) === 0 && Number(document.getElementById('card-amount').value || 0) === 0 && Number(document.getElementById('wallet-amount').value || 0) === 0) {
+        cashAmount.value = money(cartTotal());
+        cashTendered.value = money(cartTotal());
         renderCart();
     }
+}
+function resetSaleState(result = null) {
+    cart = [];
+    selectedCartIndex = null;
+    paymentManuallyEdited = false;
+    ['cash-amount', 'cash-tendered', 'card-amount', 'wallet-amount', 'discount-value'].forEach(id => document.getElementById(id).value = '0');
+    document.querySelector('[name="discounts[0][discount_type]"]').value = '';
+    getField('discounts[0][reason]').value = '';
+    renderCart();
+    if (result) {
+        receiptActions.classList.remove('d-none');
+        receiptActions.innerHTML = `<strong>${result.invoice_number}</strong> completed.
+            <div class="mt-1 d-flex flex-wrap gap-1">
+                <a class="btn btn-sm btn-outline-success" href="${result.thermal_invoice_url}" target="_blank">Thermal receipt</a>
+                <a class="btn btn-sm btn-outline-primary" href="${result.a4_invoice_url}" target="_blank">A4 invoice</a>
+                <a class="btn btn-sm btn-outline-secondary" href="${result.show_url}">View sale</a>
+            </div>`;
+    }
+    safeRefocusScanner();
+}
+document.getElementById('add-selected').addEventListener('click', async () => {
+    await scanOrAddQuery();
 });
-['cash-amount', 'cash-tendered', 'card-amount', 'wallet-amount', 'discount-value'].forEach(id => document.getElementById(id).addEventListener('input', renderCart));
-document.querySelector('[name="discounts[0][value_type]"]').addEventListener('change', renderCart);
-document.querySelector('[name="discounts[0][discount_type]"]').addEventListener('change', renderCart);
+document.addEventListener('input', event => {
+    if (event.target.classList.contains('cart-qty')) {
+        const index = Number(event.target.dataset.index);
+        const quantity = event.target.value === '' ? 0 : Math.max(0, Math.floor(Number(event.target.value || 0)));
+        cart[index].quantity = quantity;
+        selectedCartIndex = index;
+        event.target.closest('tr').querySelector('.cart-line-total').textContent = money(cart[index].price * quantity);
+        renderTotals();
+    }
+});
+document.addEventListener('change', event => {
+    if (event.target.classList.contains('cart-qty')) {
+        const index = Number(event.target.dataset.index);
+        const quantity = Math.max(1, Math.floor(Number(event.target.value || 0)));
+        cart[index].quantity = quantity;
+        event.target.value = quantity;
+        event.target.closest('tr').querySelector('.cart-line-total').textContent = money(cart[index].price * quantity);
+        renderTotals();
+    }
+});
+document.addEventListener('click', event => {
+    const removeButton = event.target.closest('.remove-item');
+    if (removeButton) {
+        selectedCartIndex = Number(removeButton.dataset.index);
+        removeSelectedItem();
+        return;
+    }
+    if (event.target.closest('input, button, select, textarea, a')) {
+        return;
+    }
+    const row = event.target.closest('#cart-table tbody tr[data-index]');
+    if (row) {
+        selectedCartIndex = Number(row.dataset.index);
+        updateCartSelectionClasses();
+    }
+});
+['cash-amount', 'cash-tendered', 'card-amount', 'wallet-amount'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+    paymentManuallyEdited = true;
+    renderTotals();
+}));
+document.getElementById('discount-value').addEventListener('input', renderTotals);
+document.querySelector('[name="discounts[0][value_type]"]').addEventListener('change', renderTotals);
+document.querySelector('[name="discounts[0][discount_type]"]').addEventListener('change', renderTotals);
+productSearch.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        scanOrAddQuery();
+    }
+});
+document.addEventListener('keydown', event => {
+    const target = event.target;
+    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+    const inProductSearch = target === productSearch;
+    const inPayment = target.closest('#payment-panel');
+    if (event.key === 'F2' || (event.ctrlKey && event.key.toLowerCase() === 'f')) {
+        event.preventDefault();
+        focusScanner();
+        return;
+    }
+    if (event.key === 'F8') {
+        event.preventDefault();
+        syncCashToTotalIfEmpty();
+        focusPayment();
+        return;
+    }
+    if (event.key === 'F9') {
+        event.preventDefault();
+        if (validatePayment()) saleForm.requestSubmit();
+        return;
+    }
+    if (event.key === 'Escape') {
+        if (window.Swal && Swal.isVisible()) Swal.close();
+        else focusScanner();
+        return;
+    }
+    if (typing && !inProductSearch) {
+        if (event.key === 'Enter' && inPayment) {
+            event.preventDefault();
+            if (validatePayment()) saleForm.requestSubmit();
+        }
+        return;
+    }
+    if (event.key === '+') {
+        event.preventDefault();
+        adjustSelectedQuantity(1);
+    } else if (event.key === '-') {
+        event.preventDefault();
+        adjustSelectedQuantity(-1);
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        removeSelectedItem();
+    }
+});
 
 const dbName = 'zynq-pos-offline';
 const snapshotKey = 'current-pos-snapshot';
@@ -398,21 +673,64 @@ document.getElementById('sync-now').addEventListener('click', async () => {
         Swal.fire({icon: 'error', title: 'Sync failed', text: error.message});
     }
 });
-document.getElementById('sale-form').addEventListener('submit', async event => {
-    if (navigator.onLine) return;
+saleForm.addEventListener('submit', async event => {
+    if (saleSubmitting) {
+        event.preventDefault();
+        return;
+    }
+    if (navigator.onLine) {
+        event.preventDefault();
+        if (!validatePayment()) return;
+        saleSubmitting = true;
+        completeSaleButton.disabled = true;
+        completeSaleButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Completing...';
+        try {
+            const response = await fetch(saleForm.action, {
+                method: 'POST',
+                headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': csrf},
+                body: new FormData(saleForm),
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.message || 'Sale could not be completed.');
+            }
+            resetSaleState(result);
+            setScanFeedback(`Sale ${result.invoice_number} completed.`, 'success');
+            toast('success', 'Sale completed', result.invoice_number);
+        } catch (error) {
+            setScanFeedback(error.message, 'danger');
+            toast('error', 'Sale blocked', error.message);
+            focusPayment();
+        } finally {
+            saleSubmitting = false;
+            completeSaleButton.disabled = false;
+            completeSaleButton.innerHTML = '<i class="fas fa-check me-1"></i>Complete Sale';
+        }
+        return;
+    }
     event.preventDefault();
+    if (!validatePayment()) return;
+    saleSubmitting = true;
+    completeSaleButton.disabled = true;
     Swal.fire({title: 'Saving offline receipt', text: 'This receipt is pending sync and is not a final official invoice.', allowOutsideClick: false, didOpen: () => Swal.showLoading()});
     try {
         await queueOfflineSale();
         Swal.fire({toast: true, position: 'top-end', icon: 'warning', title: 'Offline receipt queued', text: 'PENDING SYNC - NOT FINAL OFFICIAL INVOICE.', timer: 2400, showConfirmButton: false});
     } catch (error) {
         Swal.fire({icon: 'error', title: 'Offline sale blocked', text: error.message});
+    } finally {
+        saleSubmitting = false;
+        completeSaleButton.disabled = false;
     }
 });
 window.addEventListener('online', () => syncPendingSales().catch(() => window.ZynqOfflineShell.refresh()));
 window.addEventListener('online', updateOfflineUi);
 window.addEventListener('offline', updateOfflineUi);
-document.addEventListener('DOMContentLoaded', updateOfflineUi);
+document.addEventListener('DOMContentLoaded', () => {
+    renderCart();
+    updateOfflineUi();
+    safeRefocusScanner();
+});
 </script>
 @endpush
 @endsection

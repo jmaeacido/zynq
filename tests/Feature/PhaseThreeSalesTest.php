@@ -54,7 +54,78 @@ class PhaseThreeSalesTest extends TestCase
     {
         [$tenant, $branch, $terminal, $cashier, $product] = $this->saleFixture();
 
-        $this->actingAs($cashier)->get(route('pos.checkout'))->assertOk()->assertSee('POS Checkout');
+        $this->actingAs($cashier)->get(route('pos.checkout'))
+            ->assertOk()
+            ->assertSee('POS Checkout')
+            ->assertSee('Shortcuts:')
+            ->assertSee('Ready to scan.');
+    }
+
+    public function test_pos_product_search_prioritizes_exact_barcode_and_sku(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product] = $this->saleFixture();
+        $category = ProductCategory::firstOrFail();
+        Product::create([
+            'tenant_id' => $tenant->id,
+            'category_id' => $category->id,
+            'sku' => 'ALT-SKU',
+            'barcode' => 'ALT-BARCODE',
+            'name' => '48000000000'.$tenant->id.' Similar Name',
+            'unit' => 'pcs',
+            'selling_price' => 10,
+            'cost_price' => 5,
+            'tax_type' => 'VATABLE',
+        ]);
+
+        $this->actingAs($cashier)->getJson(route('pos.products', ['q' => $product->barcode]))
+            ->assertOk()
+            ->assertJsonPath('0.id', $product->id);
+
+        $this->actingAs($cashier)->getJson(route('pos.products', ['q' => str_replace('-', '', $product->sku)]))
+            ->assertOk()
+            ->assertJsonPath('0.id', $product->id);
+    }
+
+    public function test_json_sale_rejects_insufficient_payment(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product] = $this->saleFixture();
+        (new InventoryService())->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+
+        $this->actingAs($cashier)->postJson(route('pos.sales.store'), [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+            'items' => [
+                ['product_id' => $product->id, 'quantity' => 2],
+            ],
+            'payments' => [
+                ['payment_method' => 'cash', 'amount' => 10, 'amount_tendered' => 10],
+            ],
+        ])->assertUnprocessable()->assertJson(['message' => 'Payment amount is less than total amount due.']);
+
+        $this->assertDatabaseCount('sales', 0);
+    }
+
+    public function test_json_sale_returns_invoice_actions_for_pos_reset_flow(): void
+    {
+        [$tenant, $branch, $terminal, $cashier, $product] = $this->saleFixture();
+        (new InventoryService())->stockIn($product, $branch, 10, 'Opening stock', $cashier);
+
+        $response = $this->actingAs($cashier)->postJson(route('pos.sales.store'), [
+            'branch_id' => $branch->id,
+            'terminal_id' => $terminal->id,
+            'items' => [
+                ['product_id' => $product->id, 'quantity' => 2],
+            ],
+            'payments' => [
+                ['payment_method' => 'cash', 'amount' => 50, 'amount_tendered' => 100],
+            ],
+        ])->assertOk()
+            ->assertJsonPath('message', 'Sale completed.')
+            ->assertJsonStructure(['sale_id', 'invoice_number', 'show_url', 'thermal_invoice_url', 'a4_invoice_url']);
+
+        $sale = Sale::firstOrFail();
+        $response->assertJsonPath('thermal_invoice_url', route('sales.invoice.thermal', $sale));
+        $response->assertJsonPath('a4_invoice_url', route('sales.invoice.a4', $sale));
     }
 
     public function test_invoice_numbering_is_sequential_per_terminal(): void

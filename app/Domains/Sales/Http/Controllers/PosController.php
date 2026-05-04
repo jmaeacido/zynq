@@ -40,14 +40,23 @@ class PosController extends Controller
     public function products(Request $request, TenantContext $context): JsonResponse
     {
         $query = trim((string) $request->query('q', ''));
+        $compactQuery = preg_replace('/[^A-Za-z0-9]/', '', $query);
         $products = $context->scopeForUser(Product::query()->where('active', true), $request->user())
-            ->when($query !== '', function ($builder) use ($query): void {
-                $builder->where(function ($nested) use ($query): void {
-                    $nested->where('name', 'like', "%{$query}%")
+            ->when($query !== '', function ($builder) use ($query, $compactQuery): void {
+                $builder->where(function ($nested) use ($query, $compactQuery): void {
+                    $nested->where('barcode', $query)
+                        ->orWhere('sku', $query)
+                        ->orWhereRaw("REPLACE(REPLACE(barcode, '-', ''), ' ', '') = ?", [$compactQuery])
+                        ->orWhereRaw("REPLACE(REPLACE(sku, '-', ''), ' ', '') = ?", [$compactQuery])
+                        ->orWhere('name', 'like', "%{$query}%")
                         ->orWhere('sku', 'like', "%{$query}%")
                         ->orWhere('barcode', 'like', "%{$query}%");
                 });
             })
+            ->when($query !== '', fn ($builder) => $builder->orderByRaw(
+                "CASE WHEN barcode = ? THEN 0 WHEN sku = ? THEN 1 WHEN REPLACE(REPLACE(barcode, '-', ''), ' ', '') = ? THEN 2 WHEN REPLACE(REPLACE(sku, '-', ''), ' ', '') = ? THEN 3 ELSE 4 END",
+                [$query, $query, $compactQuery, $compactQuery],
+            ))
             ->orderBy('name')
             ->limit(20)
             ->get(['id', 'sku', 'barcode', 'name', 'unit', 'selling_price', 'tax_type']);
@@ -55,12 +64,27 @@ class PosController extends Controller
         return response()->json($products);
     }
 
-    public function store(StoreSaleRequest $request, SaleService $service): RedirectResponse
+    public function store(StoreSaleRequest $request, SaleService $service): RedirectResponse|JsonResponse
     {
         try {
             $sale = $service->create($request->validated(), $request->user());
         } catch (InvalidArgumentException $exception) {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
+
             return back()->withErrors(['sale' => $exception->getMessage()])->withInput();
+        }
+
+        if ($request->expectsJson()) {
+            return response()->json([
+                'message' => 'Sale completed.',
+                'sale_id' => $sale->id,
+                'invoice_number' => $sale->invoice_number,
+                'show_url' => route('sales.show', $sale),
+                'thermal_invoice_url' => route('sales.invoice.thermal', $sale),
+                'a4_invoice_url' => route('sales.invoice.a4', $sale),
+            ]);
         }
 
         return redirect()->route('sales.show', $sale)->with('status', 'Sale completed.');
